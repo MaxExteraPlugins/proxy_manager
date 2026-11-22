@@ -1,1 +1,28 @@
-{}
+{
+  "channels": [
+    {
+      "title": {
+        "ru": "Тест 1",
+        "en": "Test 1"
+      },
+      "description": {
+        "ru": "Крутой первый",
+        "en": "Cool first"
+      },
+      "icon": "punipuni_ayu/1",
+      "url": "https://t.me/MaxExteraPlugins"
+    },
+    {
+      "title": {
+        "ru": "Тест 2",
+        "en": "Test 2"
+      },
+      "description": {
+        "ru": "Крутой второй",
+        "en": "Cool second"
+      },
+      "icon": "punipuni_ayu/2",
+      "url": "https://t.me/MaxExteraPlugins"
+    }
+  ]
+}
