@@ -38,15 +38,15 @@
     },
     {
       "title": {
-        "ru": ".",
-        "en": "."
+        "ru": "RaViraNet",
+        "en": "RaViraNet"
       },
       "description": {
-        "ru": ".",
-        "en": "."
+        "ru": "Бесплатные подписки/ключи для VPN",
+        "en": "Free VPN subscriptions/keys"
       },
       "icon": "ProxyManagerSponsors/3",
-      "url": "."
+      "url": "https://t.me/RaViraNet"
     },
   ]
 }
