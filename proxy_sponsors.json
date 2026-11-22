@@ -2,27 +2,51 @@
   "channels": [
     {
       "title": {
-        "ru": "Тест 1",
-        "en": "Test 1"
+        "ru": "Форум #URL:// [#РКП]",
+        "en": "Forum #URL:// [#РКП]"
       },
       "description": {
-        "ru": "Крутой первый",
-        "en": "Cool first"
+        "ru": "Форум проекта #РосКомПозор",
+        "en": "#РосКомПозор project forum"
       },
-      "icon": "punipuni_ayu/1",
-      "url": "https://t.me/MaxExteraPlugins"
+      "icon": "ProxyManagerSponsors/0",
+      "url": "https://t.me/urlsources"
     },
     {
       "title": {
-        "ru": "Тест 2",
-        "en": "Test 2"
+        "ru": "WVF - Семья",
+        "en": "WVF - Family"
       },
       "description": {
-        "ru": "Крутой второй",
-        "en": "Cool second"
+        "ru": "Мы всегда тут",
+        "en": "We are always here"
       },
-      "icon": "punipuni_ayu/2",
-      "url": "https://t.me/MaxExteraPlugins"
-    }
+      "icon": "ProxyManagerSponsors/1",
+      "url": "https://t.me/wildVF"
+    },
+    {
+      "title": {
+        "ru": "WL RUS",
+        "en": "WL RUS"
+      },
+      "description": {
+        "ru": "Не вирус, а влрус",
+        "en": "Not a virus, but a vlrus"
+      },
+      "icon": "ProxyManagerSponsors/2",
+      "url": "https://t.me/wlrforum"
+    },
+    {
+      "title": {
+        "ru": ".",
+        "en": "."
+      },
+      "description": {
+        "ru": ".",
+        "en": "."
+      },
+      "icon": "ProxyManagerSponsors/3",
+      "url": "."
+    },
   ]
 }
