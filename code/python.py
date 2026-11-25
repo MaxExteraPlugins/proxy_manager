@@ -35,7 +35,7 @@ __id__ = "proxy_manager"
 __name__ = "Proxy Manager"
 __description__ = "Поиск и проверка рабочих MTProto, WebProxy и SOCKS5 прокси из каналов Telegram."
 __author__ = "@itNotMax - @MaxExteraPlugins"
-__version__ = "1.0.30"
+__version__ = "1.0.33"
 __icon__ = "MaxExteraPluginsStickers/35"
 __min_version__ = "12.10.6"
 
@@ -1054,6 +1054,34 @@ class L:
             "ru": "Переключает прокси при зависании скачивания или отправки медиа (фото, видео, файлы)",
             "en": "Switches proxy if media download or upload gets stuck (photos, videos, files)",
         },
+        "media_stall_timeout_title": {
+            "ru": "Время ожидания при зависании",
+            "en": "Stall timeout duration",
+        },
+        "media_stall_timeout_sub": {
+            "ru": "Через сколько секунд зависания медиа переключать прокси",
+            "en": "Seconds of stalled media before switching proxy",
+        },
+        "quick_search_proxy": {
+            "ru": "⚡ Быстрый поиск прокси",
+            "en": "⚡ Quick Proxy Search",
+        },
+        "quick_search_in_progress": {
+            "ru": "Поиск прокси уже выполняется...",
+            "en": "Proxy search already in progress...",
+        },
+        "quick_search_searching": {
+            "ru": "⚡ Поиск лучшего рабочего прокси...",
+            "en": "⚡ Searching for best working proxy...",
+        },
+        "quick_search_success": {
+            "ru": "⚡ Подключено: {0} ({1} ms)",
+            "en": "⚡ Connected: {0} ({1} ms)",
+        },
+        "quick_search_none_found": {
+            "ru": "Рабочих прокси не найдено",
+            "en": "No working proxies found",
+        },
         "media_stalled_switched": {
             "ru": "Зависла загрузка или отправка медиа. Переключено на следующий рабочий прокси",
             "en": "Media download or upload stalled. Switched to next working proxy",
@@ -1529,6 +1557,8 @@ def _parse_proxy_link(raw_url):
             norm = "tg://socks" + norm[8:]
         elif norm.lower().startswith("tg:webproxy"):
             norm = "tg://webproxy" + norm[11:]
+        elif norm.lower().startswith(("t.me/", "telegram.me/")):
+            norm = "https://" + norm
 
         parsed = urllib.parse.urlsplit(norm)
         path = parsed.path.lower()
@@ -1643,7 +1673,8 @@ def _extract_proxy_candidates_from_message(msg):
                 p = _parse_proxy_link(ent_url)
                 if p:
                     candidates.append(p)
-            elif ent.__class__.__name__ == "TL_messageEntityUrl" and text:
+            cls_name = getattr(getattr(ent, "__class__", None), "__name__", "")
+            if ("messageEntityUrl" in cls_name or "messageEntityTextUrl" in cls_name) and text:
                 offset = getattr(ent, "offset", 0)
                 length = getattr(ent, "length", 0)
                 if length > 0 and offset >= 0 and (offset + length) <= len(text):
@@ -1653,7 +1684,7 @@ def _extract_proxy_candidates_from_message(msg):
 
     if text:
         matches = re.finditer(
-            r"(?:tg|https?)://(?:t\.me/|telegram\.me/)?(?:proxy|socks|webproxy)\?[^\s\"\'<>`()]+",
+            r"(?:(?:https?://)?(?:t\.me/|telegram\.me/)|tg://|tg:)(?:proxy|socks|webproxy)\?[^\s\"\'<>`()]+",
             text,
             re.IGNORECASE,
         )
@@ -1678,7 +1709,7 @@ def _extract_proxies_from_raw_text(text):
     seen = set()
 
     matches = re.finditer(
-        r"(?:tg|https?)://(?:t\.me/|telegram\.me/)?(?:proxy|socks|webproxy)\?[^\s\"\'<>`()]+",
+        r"(?:(?:https?://)?(?:t\.me/|telegram\.me/)|tg://|tg:)(?:proxy|socks|webproxy)\?[^\s\"\'<>`()]+",
         text,
         re.IGNORECASE,
     )
@@ -2483,6 +2514,16 @@ class Plugin(BasePlugin):
 
             dex.call("pySetAutoConnectFallback", AutoConnectCallback(self))
 
+            class QuickSearchCallback(dynamic_proxy(Runnable)):
+                def __init__(self, pl):
+                    super().__init__()
+                    self.pl = pl
+
+                def run(self):
+                    self.pl._quick_search_and_connect()
+
+            dex.call("pySetQuickSearchCallback", QuickSearchCallback(self))
+
         try:
             self.add_menu_item(
                 MenuItemData(
@@ -2519,7 +2560,7 @@ class Plugin(BasePlugin):
             last_stat_time = 0.0
 
             while getattr(self, "_watchdog_running", False):
-                time.sleep(2.0)
+                time.sleep(1.0)
                 try:
                     if not bool(self.get_setting("auto_switch_enabled", True)) or not bool(self.get_setting("auto_switch_media", True)):
                         stalled_seconds = 0
@@ -2546,9 +2587,10 @@ class Plugin(BasePlugin):
                         last_bytes = -1
                         continue
 
+                    timeout_sec = int(self.get_setting("media_stall_timeout_seconds", 8))
                     if last_bytes >= 0 and bytes_sum == last_bytes:
-                        stalled_seconds += 2
-                        if stalled_seconds >= 8:
+                        stalled_seconds += 1
+                        if stalled_seconds >= timeout_sec:
                             stalled_seconds = 0
                             last_bytes = -1
                             last_switch_time = time.time()
@@ -2975,6 +3017,15 @@ class Plugin(BasePlugin):
         (1, "Заменять старые новыми"),
     ]
 
+    MEDIA_STALL_CHOICES = [
+        (3, "3 сек (Очень быстро)"),
+        (5, "5 сек (Быстро)"),
+        (8, "8 сек (По умолчанию)"),
+        (12, "12 сек (Умеренно)"),
+        (15, "15 сек (Медленно)"),
+        (20, "20 сек (Для медленной сети)"),
+    ]
+
     def _format_interval(self, mins):
         try:
             mins = int(mins)
@@ -3048,6 +3099,42 @@ class Plugin(BasePlugin):
                 except Exception:
                     pass
                 run_on_ui_thread(lambda: BulletinHelper.show_info(f"{L.g('proxy_cooldown_duration_title')}: {plugin.COOLDOWN_CHOICES[which][1]}"))
+
+        b.set_items(options, on_choice)
+        b.set_negative_button(L.g("cancel"), lambda d, w: d.dismiss())
+        b.show()
+
+    def _get_media_stall_timeout_label(self):
+        val = int(self.get_setting("media_stall_timeout_seconds", 8))
+        for sec, label in self.MEDIA_STALL_CHOICES:
+            if sec == val:
+                return label
+        return f"{val} сек"
+
+    def _show_media_stall_timeout_picker(self, *args):
+        view = args[0] if args else None
+        act, frag = _get_context_and_fragment(view)
+        if not act:
+            act = _get_act()
+        if not act:
+            return
+        options = [label for _, label in self.MEDIA_STALL_CHOICES]
+        b = AlertDialogBuilder(act)
+        b.set_title(L.g("media_stall_timeout_title"))
+        plugin = self
+        def on_choice(d, which):
+            d.dismiss()
+            if 0 <= which < len(plugin.MEDIA_STALL_CHOICES):
+                val = plugin.MEDIA_STALL_CHOICES[which][0]
+                plugin.set_setting("media_stall_timeout_seconds", val)
+                try:
+                    from client_utils import get_last_fragment
+                    f = get_last_fragment()
+                    if f and hasattr(f, "rebuildUI"):
+                        f.rebuildUI()
+                except Exception:
+                    pass
+                run_on_ui_thread(lambda: BulletinHelper.show_info(f"{L.g('media_stall_timeout_title')}: {plugin.MEDIA_STALL_CHOICES[which][1]}"))
 
         b.set_items(options, on_choice)
         b.set_negative_button(L.g("cancel"), lambda d, w: d.dismiss())
@@ -3203,15 +3290,15 @@ class Plugin(BasePlugin):
         b.set_negative_button(L.g("cancel"), lambda d, w: d.dismiss())
         b.show()
 
-    def _enforce_proxy_limit(self, recently_added_keys=None):
+    def _enforce_proxy_limit(self, recently_added_keys=None, **kwargs):
         if not bool(self.get_setting("proxy_limit_enabled", False)):
             return 0
         try:
             max_count = int(self.get_setting("proxy_max_count", 30))
             policy = int(self.get_setting("proxy_limit_policy", 0))
-            if recently_added_keys is None:
+            if not isinstance(recently_added_keys, (list, set, tuple)):
                 recently_added_keys = self._get_recently_added_keys()
-            prot_json = json.dumps(recently_added_keys or [])
+            prot_json = json.dumps(list(recently_added_keys) if recently_added_keys else [])
             if dex.loaded:
                 removed = dex.call("pyEnforceProxyLimit", max_count, policy, prot_json)
                 if removed and int(removed) > 0:
@@ -3919,14 +4006,24 @@ class Plugin(BasePlugin):
                     on_change=on_auto_conn_sub_change,
                 )
             )
+            media_switch_active = bool(self.get_setting("auto_switch_media", True))
             items.append(
                 Switch(
                     key="auto_switch_media",
                     text=L.g("auto_switch_media_title"),
                     default=True,
                     subtext=L.g("auto_switch_media_sub"),
+                    on_change=make_master_toggle("auto_switch_media"),
                 )
             )
+            if media_switch_active:
+                items.append(
+                    Text(
+                        text=L.g("media_stall_timeout_title"),
+                        subtext=self._get_media_stall_timeout_label(),
+                        on_click=lambda *args: self._show_media_stall_timeout_picker(*args),
+                    )
+                )
 
             # Стратегия переключения
             cur_strat = int(self.get_setting("auto_switch_strategy", 0))
@@ -4547,7 +4644,7 @@ class Plugin(BasePlugin):
                     checked_msgs_total += msgs.size()
                     for m in _iter_java_list(msgs):
                         m_date = getattr(m, "date", 0)
-                        if channel_cutoff > 0 and m_date < channel_cutoff:
+                        if batch_idx > 0 and channel_cutoff > 0 and m_date < channel_cutoff:
                             stop_channel = True
                             break
 
@@ -4577,6 +4674,7 @@ class Plugin(BasePlugin):
                 self.log(f"Scan error for channel {ch_name}: {e}")
 
         candidates_list = list(all_candidates.values())
+        self._last_candidates_count = len(candidates_list)
         if not candidates_list or self._cancel_scan:
             return []
 
@@ -4591,18 +4689,25 @@ class Plugin(BasePlugin):
                     continue
                 filtered.append(c)
             candidates_list = filtered
+            self._last_candidates_count = len(candidates_list)
             if not candidates_list or self._cancel_scan:
                 return []
 
         if progress_cb:
             progress_cb(-1, len(channels), "", checked_msgs_total, len(candidates_list))
 
-        alive_proxies = _batch_check_candidates(candidates_list, timeout_ms=3000)
+        alive_proxies = _batch_check_candidates(candidates_list, timeout_ms=3500)
         alive_proxies.sort(key=lambda x: x.get("ping", 999999))
         _enrich_proxies_with_country(alive_proxies)
         whitelist = self._get_whitelist()
-        if whitelist:
-            alive_proxies = [p for p in alive_proxies if p.get("country_code", "").upper() in whitelist]
+        if whitelist and alive_proxies:
+            wl_matched = [p for p in alive_proxies if p.get("country_code", "").upper() in whitelist]
+            if wl_matched:
+                alive_proxies = wl_matched
+            else:
+                unknowns = [p for p in alive_proxies if not p.get("country_code")]
+                if unknowns:
+                    alive_proxies = unknowns
         return alive_proxies
 
     def _run_scan_worker(self, channels, depth_days):
@@ -4630,8 +4735,10 @@ class Plugin(BasePlugin):
                 return
 
             if not alive_proxies:
+                cand_cnt = getattr(self, "_last_candidates_count", 0)
+                err_msg = L.g("no_alive_proxies", cand_cnt) if cand_cnt > 0 else L.g("no_proxies_found")
                 run_on_ui_thread(
-                    lambda: BulletinHelper.show_error(L.g("no_proxies_found"))
+                    lambda: BulletinHelper.show_error(err_msg)
                 )
                 return
 
@@ -4684,6 +4791,61 @@ class Plugin(BasePlugin):
             return
 
         threading.Thread(target=self._auto_connect_worker, daemon=True).start()
+
+    def _quick_search_and_connect(self):
+        if getattr(self, "_is_quick_searching", False) or getattr(self, "_scanning", False):
+            run_on_ui_thread(lambda: BulletinHelper.show_info(L.g("quick_search_in_progress")))
+            return
+        self._is_quick_searching = True
+
+        def run():
+            try:
+                run_on_ui_thread(lambda: BulletinHelper.show_info(L.g("quick_search_searching")))
+                channels = self._get_channel_tokens()
+                if not channels:
+                    run_on_ui_thread(lambda: BulletinHelper.show_error(L.g("no_channels")))
+                    return
+
+                alive = self._perform_scan(channels, depth_days=1, max_batches=6)
+                if not alive:
+                    run_on_ui_thread(lambda: BulletinHelper.show_error(L.g("quick_search_none_found")))
+                    return
+
+                self._last_results = alive
+                self._save_results(alive)
+
+                smart_enabled = bool(self.get_setting("smart_analysis_enabled", True))
+                if smart_enabled:
+                    alive.sort(key=lambda x: float(x.get("ping", 999999)) / max(0.1, self._calculate_smart_score(x)))
+                else:
+                    alive.sort(key=lambda x: x.get("ping", 999999))
+
+                best = alive[0]
+                self._record_proxy_stat(best, success=True)
+                self._enforce_proxy_limit(to_add_count=1)
+
+                applied = _py_apply_proxy(best.get("url", ""))
+                if applied:
+                    server = best.get("server", "")
+                    port = best.get("port", "")
+                    ping = best.get("ping", 0)
+                    flag = best.get("country_flag", "")
+                    label = f"{flag} {server}:{port}".strip()
+                    run_on_ui_thread(
+                        lambda: BulletinHelper.show_success(
+                            L.g("quick_search_success", label, ping)
+                        )
+                    )
+                    self._on_proxy_switched()
+                else:
+                    run_on_ui_thread(lambda: BulletinHelper.show_error(L.g("auto_connect_failed")))
+            except Exception as e:
+                self.log(f"quick_search error: {e}")
+                run_on_ui_thread(lambda: BulletinHelper.show_error(str(e)))
+            finally:
+                self._is_quick_searching = False
+
+        threading.Thread(target=run, daemon=True, name="ProxyQuickSearch").start()
 
     def _auto_connect_worker(self):
         if not bool(self.get_setting("auto_switch_enabled", True)) or not bool(self.get_setting("auto_connect_on_enable", True)):
@@ -5007,7 +5169,7 @@ class Plugin(BasePlugin):
         items = [
             L.g("clean_opt_remove_dead"),
             L.g("clean_opt_keep_top"),
-            L.g("clean_opt_delete_all"),
+            "⚠️ " + L.g("clean_opt_delete_all"),
         ]
 
         def on_select(d, which):
@@ -5024,14 +5186,6 @@ class Plugin(BasePlugin):
         builder.show()
 
     def _start_remove_dead_proxies(self):
-        try:
-            from org.telegram.messenger import SharedConfig
-            if not SharedConfig.isProxyEnabled():
-                BulletinHelper.show_error(L.g("clean_proxy_disabled"))
-                return
-        except Exception:
-            pass
-
         BulletinHelper.show_info(L.g("clean_checking"))
 
         def worker():
@@ -5043,7 +5197,7 @@ class Plugin(BasePlugin):
                 if dex.loaded:
                     safe = bool(self.get_setting("safe_clean_enabled", True))
                     prot_keys = self._get_recently_added_keys() if safe else []
-                    res_str = dex.call("pyRemoveDeadProxies", 2000, safe, json.dumps(prot_keys))
+                    res_str = dex.call("pyRemoveDeadProxies", 3500, safe, json.dumps(prot_keys))
                     if res_str:
                         data = json.loads(str(res_str))
                         deleted = data.get("deleted", 0)
@@ -5069,13 +5223,6 @@ class Plugin(BasePlugin):
         threading.Thread(target=worker, daemon=True).start()
 
     def _show_keep_top_dialog(self, act):
-        try:
-            from org.telegram.messenger import SharedConfig
-            if not SharedConfig.isProxyEnabled():
-                BulletinHelper.show_error(L.g("clean_proxy_disabled"))
-                return
-        except Exception:
-            pass
         if act is None:
             return
         builder = AlertDialogBuilder(act)
@@ -5108,7 +5255,7 @@ class Plugin(BasePlugin):
                 deleted = 0
                 aborted = False
                 if dex.loaded:
-                    res_str = dex.call("pyKeepTopProxies", keep_count, 2500)
+                    res_str = dex.call("pyKeepTopProxies", keep_count, 3500)
                     if res_str:
                         data = json.loads(str(res_str))
                         deleted = data.get("deleted", 0)
@@ -5136,7 +5283,27 @@ class Plugin(BasePlugin):
             return
         builder = AlertDialogBuilder(act)
         builder.set_title(L.g("clean_opt_delete_all"))
-        builder.set_message(L.g("clean_confirm_delete_all", count))
+
+        working_count = 0
+        try:
+            from com.exteragram.messenger.proxy import ProxyController
+            pc = ProxyController.getInstance()
+            plist = pc.getProxyList()
+            if plist:
+                for pi in _iter_java_list(plist):
+                    av = getattr(pi, "available", False)
+                    avTime = getattr(pi, "availableCheckTime", 0)
+                    if av and avTime > 0:
+                        working_count += 1
+        except Exception:
+            pass
+
+        if working_count > 0:
+            msg = f"⚠️ Внимание! В Telegram сейчас есть {working_count} РАБОЧИХ прокси (всего {count}).\n\nВы действительно хотите удалить ВСЕ сохраненные прокси, включая рабочие?"
+        else:
+            msg = L.g("clean_confirm_delete_all", count)
+
+        builder.set_message(msg)
 
         def on_confirm(d, w):
             d.dismiss()
@@ -5148,12 +5315,18 @@ class Plugin(BasePlugin):
                     pc = ProxyController.getInstance()
                     pc.clearAll()
                     pc.saveProxyList()
+                    try:
+                        from org.telegram.messenger import NotificationCenter
+                        NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.proxySettingsChanged)
+                    except Exception:
+                        pass
                 BulletinHelper.show_success(L.g("clean_all_deleted"))
             except Exception as e:
                 self.log(f"Clear all error: {e}")
+                BulletinHelper.show_error(str(e))
 
         builder.set_positive_button(L.g("clean_opt_delete_all"), on_confirm)
-        builder.set_negative_button(L.g("close"), lambda d, w: d.dismiss())
+        builder.set_negative_button(L.g("cancel"), lambda d, w: d.dismiss())
         builder.show()
 
     COMMON_COUNTRIES = [
@@ -5888,10 +6061,17 @@ class Plugin(BasePlugin):
                                 BulletinHelper.show_info(L.g("proxy_added_toast"))
                         else:
                             ok = _call_dex("pyRemoveProxyByLink", p_url)
+                            if not ok:
+                                srv = p_data.get("server", "")
+                                prt = p_data.get("port", "")
+                                if srv:
+                                    ok = _call_dex("pyRemoveProxyByLink", f"{srv}:{prt}" if prt else srv)
                             if ok:
                                 st_dict["added"] = False
                                 btn_updater(False)
                                 BulletinHelper.show_info(L.g("proxy_removed_toast"))
+                            else:
+                                BulletinHelper.show_error("Не удалось удалить прокси")
                     add_label = L.g("btn_delete") if st_dict.get("added") else L.g("btn_add")
                     opt.add(add_label, _make_runnable(do_toggle_add))
 
@@ -5953,10 +6133,17 @@ class Plugin(BasePlugin):
                                 BulletinHelper.show_info(L.g("proxy_added_toast"))
                         else:
                             ok = _call_dex("pyRemoveProxyByLink", p_url)
+                            if not ok:
+                                srv = p_data.get("server", "")
+                                prt = p_data.get("port", "")
+                                if srv:
+                                    ok = _call_dex("pyRemoveProxyByLink", f"{srv}:{prt}" if prt else srv)
                             if ok:
                                 st_dict["added"] = False
                                 btn_updater(False)
                                 BulletinHelper.show_info(L.g("proxy_removed_toast"))
+                            else:
+                                BulletinHelper.show_error("Не удалось удалить прокси")
                     elif which == 2:
                         AndroidUtilities.addToClipboard(p_url)
                         BulletinHelper.show_info(L.g("copied_clipboard"))
@@ -5980,7 +6167,7 @@ class Plugin(BasePlugin):
                 b.set_negative_button(L.g("cancel"), lambda d, w: d.dismiss())
                 b.show()
 
-            for p in alive:
+            def _build_proxy_card(p):
                 p_type = p.get("type", "MTProto")
                 server = p.get("server", "")
                 port = p.get("port", "")
@@ -6146,10 +6333,17 @@ class Plugin(BasePlugin):
                                 BulletinHelper.show_info(L.g("proxy_added_toast"))
                         else:
                             ok = _call_dex("pyRemoveProxyByLink", target_url)
+                            if not ok:
+                                srv = p.get("server", "")
+                                prt = p.get("port", "")
+                                if srv:
+                                    ok = _call_dex("pyRemoveProxyByLink", f"{srv}:{prt}" if prt else srv)
                             if ok:
                                 state_dict["added"] = False
                                 update_card_btn(btn_view, False)
                                 BulletinHelper.show_info(L.g("proxy_removed_toast"))
+                            else:
+                                BulletinHelper.show_error("Не удалось удалить прокси")
                     return do_toggle
 
                 def make_connect_action(target_url):
@@ -6246,12 +6440,94 @@ class Plugin(BasePlugin):
                 except Exception:
                     pass
 
-                card_params = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                )
-                card_params.setMargins(0, 0, 0, AndroidUtilities.dp(10))
-                container.addView(card, card_params)
+                return card
+
+            cards_container = LinearLayout(act)
+            cards_container.setOrientation(LinearLayout.VERTICAL)
+            container.addView(cards_container)
+
+            PAGE_SIZE = 15
+            rendered_count = [0]
+            more_btn_row = [None]
+            is_rendering = [False]
+
+            def render_next_batch():
+                if is_rendering[0]:
+                    return
+                is_rendering[0] = True
+                try:
+                    start = rendered_count[0]
+                    end = min(start + PAGE_SIZE, len(alive))
+                    if start >= end:
+                        if more_btn_row[0] is not None:
+                            try:
+                                container.removeView(more_btn_row[0])
+                            except Exception:
+                                pass
+                            more_btn_row[0] = None
+                        return
+
+                    for idx in range(start, end):
+                        p = alive[idx]
+                        card = _build_proxy_card(p)
+                        card_params = LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                        )
+                        card_params.setMargins(0, 0, 0, AndroidUtilities.dp(10))
+                        cards_container.addView(card, card_params)
+
+                    rendered_count[0] = end
+
+                    remaining = len(alive) - rendered_count[0]
+                    if remaining > 0:
+                        btn_text = f"Показать ещё ({min(PAGE_SIZE, remaining)} из {remaining})"
+                        if more_btn_row[0] is None:
+                            btn_box = LinearLayout(act)
+                            btn_box.setOrientation(LinearLayout.VERTICAL)
+                            btn_box.setGravity(Gravity.CENTER)
+                            btn_box.setPadding(0, AndroidUtilities.dp(6), 0, AndroidUtilities.dp(16))
+
+                            btn_more = create_button(
+                                btn_text,
+                                Theme.getColor(Theme.key_dialogButtonSelector),
+                                Theme.getColor(Theme.key_windowBackgroundWhiteBlackText),
+                                lambda v: render_next_batch(),
+                            )
+                            btn_box.addView(btn_more)
+                            more_btn_row[0] = btn_box
+                            container.addView(btn_box)
+                        else:
+                            try:
+                                tv_more = more_btn_row[0].getChildAt(0)
+                                if tv_more is not None:
+                                    tv_more.setText(btn_text)
+                            except Exception:
+                                pass
+                    else:
+                        if more_btn_row[0] is not None:
+                            try:
+                                container.removeView(more_btn_row[0])
+                            except Exception:
+                                pass
+                            more_btn_row[0] = None
+                finally:
+                    is_rendering[0] = False
+
+            render_next_batch()
+
+            try:
+                class _ScrollListener(dynamic_proxy(NestedScrollView.OnScrollChangeListener)):
+                    def onScrollChange(self, v, scrollX, scrollY, oldScrollX, oldScrollY):
+                        if rendered_count[0] < len(alive):
+                            child = v.getChildAt(0)
+                            if child is not None:
+                                diff = child.getBottom() - (v.getHeight() + scrollY)
+                                if diff <= AndroidUtilities.dp(350):
+                                    render_next_batch()
+                scroll.setOnScrollChangeListener(_ScrollListener())
+            except Exception:
+                pass
 
             scroll.addView(container)
             builder.setCustomView(scroll)

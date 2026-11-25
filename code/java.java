@@ -14,6 +14,7 @@ import org.json.JSONObject;
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.FileLoader;
 import org.telegram.messenger.MessageObject;
+import org.telegram.messenger.NotificationCenter;
 import org.telegram.messenger.SharedConfig;
 import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.browser.Browser;
@@ -57,11 +58,59 @@ import androidx.recyclerview.widget.RecyclerView;
 public class Main {
     private static final String TAG = "ProxyManager";
     private static final java.util.concurrent.ConcurrentHashMap<String, String> GEO_CACHE = new java.util.concurrent.ConcurrentHashMap<String, String>();
-    public static final String VERSION = "1.0.28";
-    public static final int VERSION_CODE = 28;
+    public static final String VERSION = "1.0.33";
+    public static final int VERSION_CODE = 33;
 
     public static volatile boolean autoConnectEnabled = true;
     public static volatile Runnable onAutoConnectFallback = null;
+    public static volatile Runnable onQuickSearchProxy = null;
+
+    public static void pySetQuickSearchCallback(Runnable cb) {
+        onQuickSearchProxy = cb;
+    }
+
+    public static void triggerQuickSearchProxy(BaseFragment fragment) {
+        try {
+            if (onQuickSearchProxy != null) {
+                onQuickSearchProxy.run();
+            }
+        } catch (Throwable t) {
+            Log.e(TAG, "triggerQuickSearchProxy error", t);
+        }
+    }
+
+    private static int getProxyAddRow(Object pla) {
+        if (pla == null) return -1;
+        try {
+            Field f = pla.getClass().getDeclaredField("proxyAddRow");
+            f.setAccessible(true);
+            return f.getInt(pla);
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
+    private static int getRowCount(Object pla) {
+        if (pla == null) return 0;
+        try {
+            Field f = pla.getClass().getDeclaredField("rowCount");
+            f.setAccessible(true);
+            return f.getInt(pla);
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
+    private static Object getPlaFromAdapter(Object adapter) {
+        if (adapter == null) return null;
+        try {
+            Field this0Field = adapter.getClass().getDeclaredField("this$0");
+            this0Field.setAccessible(true);
+            return this0Field.get(adapter);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
 
     public static String httpGet(String urlStr) {
         HttpURLConnection conn = null;
@@ -213,12 +262,34 @@ public class Main {
                                     @Override
                                     public void onItemClick(View view, int position) {
                                         try {
-                                            Field rcField = plaClass.getDeclaredField("rowCount");
-                                            rcField.setAccessible(true);
-                                            int rc = rcField.getInt(fragment);
-                                            if (position == rc) {
-                                                openProxyManagerSettings(fragment);
-                                                return;
+                                            int addRow = getProxyAddRow(fragment);
+                                            int rc = getRowCount(fragment);
+                                            if (addRow >= 0) {
+                                                if (position == addRow) {
+                                                    triggerQuickSearchProxy(fragment);
+                                                    return;
+                                                } else if (position == addRow + 1) {
+                                                    if (orig != null) {
+                                                        orig.onItemClick(view, addRow);
+                                                    }
+                                                    return;
+                                                } else if (position == rc + 1) {
+                                                    openProxyManagerSettings(fragment);
+                                                    return;
+                                                } else if (position > addRow + 1 && position <= rc) {
+                                                    if (orig != null) {
+                                                        orig.onItemClick(view, position - 1);
+                                                    }
+                                                    return;
+                                                }
+                                            } else {
+                                                if (position == rc) {
+                                                    triggerQuickSearchProxy(fragment);
+                                                    return;
+                                                } else if (position == rc + 1) {
+                                                    openProxyManagerSettings(fragment);
+                                                    return;
+                                                }
                                             }
                                         } catch (Throwable ignored) {}
                                         if (orig != null) {
@@ -241,7 +312,7 @@ public class Main {
                 public void afterHookedMethod(MethodHookParam param) {
                     try {
                         int count = (Integer) param.getResult();
-                        param.setResult(count + 1);
+                        param.setResult(count + 2);
                     } catch (Throwable ignored) {}
                 }
             });
@@ -252,15 +323,24 @@ public class Main {
                 public void beforeHookedMethod(MethodHookParam param) {
                     try {
                         Object adapter = param.thisObject;
-                        Field this0Field = adapter.getClass().getDeclaredField("this$0");
-                        this0Field.setAccessible(true);
-                        Object pla = this0Field.get(adapter);
-                        Field rowCountField = pla.getClass().getDeclaredField("rowCount");
-                        rowCountField.setAccessible(true);
-                        int rowCount = rowCountField.getInt(pla);
+                        Object pla = getPlaFromAdapter(adapter);
+                        int addRow = getProxyAddRow(pla);
+                        int rc = getRowCount(pla);
                         int pos = (Integer) param.args[0];
-                        if (pos == rowCount) {
-                            param.setResult(1); // 1 = TextSettingsCell in ProxyListActivity$ListAdapter
+                        if (addRow >= 0) {
+                            if (pos == addRow) {
+                                param.setResult(1); // 1 = TextSettingsCell (Quick Search)
+                            } else if (pos == addRow + 1) {
+                                param.setResult(1); // Systemic "Add Proxy"
+                            } else if (pos > addRow + 1 && pos <= rc) {
+                                param.args[0] = pos - 1;
+                            } else if (pos == rc + 1) {
+                                param.setResult(1); // Proxy Manager Settings
+                            }
+                        } else {
+                            if (pos == rc || pos == rc + 1) {
+                                param.setResult(1);
+                            }
                         }
                     } catch (Throwable ignored) {}
                 }
@@ -282,14 +362,17 @@ public class Main {
                             if (vh != null) {
                                 int pos = vh.getAdapterPosition();
                                 Object adapter = param.thisObject;
-                                Field this0Field = adapter.getClass().getDeclaredField("this$0");
-                                this0Field.setAccessible(true);
-                                Object pla = this0Field.get(adapter);
-                                Field rowCountField = pla.getClass().getDeclaredField("rowCount");
-                                rowCountField.setAccessible(true);
-                                int rowCount = rowCountField.getInt(pla);
-                                if (pos == rowCount) {
-                                    param.setResult(true);
+                                Object pla = getPlaFromAdapter(adapter);
+                                int addRow = getProxyAddRow(pla);
+                                int rc = getRowCount(pla);
+                                if (addRow >= 0) {
+                                    if (pos == addRow || pos == addRow + 1 || pos == rc + 1) {
+                                        param.setResult(true);
+                                    }
+                                } else {
+                                    if (pos == rc || pos == rc + 1) {
+                                        param.setResult(true);
+                                    }
                                 }
                             }
                         } catch (Throwable ignored) {}
@@ -304,31 +387,90 @@ public class Main {
                     break;
                 }
             }
+            final ThreadLocal<Integer> lastBindPos = new ThreadLocal<Integer>();
             if (onBindViewHolderMethod != null) {
                 XposedBridge.hookMethod(onBindViewHolderMethod, new XC_MethodHook() {
                     @Override
+                    public void beforeHookedMethod(MethodHookParam param) {
+                        try {
+                            int pos = (Integer) param.args[1];
+                            lastBindPos.set(pos);
+                            Object adapter = param.thisObject;
+                            Object pla = getPlaFromAdapter(adapter);
+                            int addRow = getProxyAddRow(pla);
+                            int rc = getRowCount(pla);
+                            if (addRow >= 0) {
+                                if (pos == addRow) {
+                                    param.args[1] = addRow;
+                                } else if (pos == addRow + 1) {
+                                    param.args[1] = addRow;
+                                } else if (pos > addRow + 1 && pos <= rc) {
+                                    param.args[1] = pos - 1;
+                                } else if (pos == rc + 1) {
+                                    param.args[1] = addRow;
+                                }
+                            } else {
+                                if (pos >= rc) {
+                                    param.args[1] = Math.max(0, rc - 1);
+                                }
+                            }
+                        } catch (Throwable ignored) {}
+                    }
+
+                    @Override
                     public void afterHookedMethod(MethodHookParam param) {
                         try {
+                            Integer extra = lastBindPos.get();
+                            lastBindPos.remove();
+                            int pos = extra != null ? extra : (Integer) param.args[1];
                             Object adapter = param.thisObject;
-                            Field this0Field = adapter.getClass().getDeclaredField("this$0");
-                            this0Field.setAccessible(true);
-                            final BaseFragment pla = (BaseFragment) this0Field.get(adapter);
-                            Field rowCountField = pla.getClass().getDeclaredField("rowCount");
-                            rowCountField.setAccessible(true);
-                            int rowCount = rowCountField.getInt(pla);
-                            int pos = (Integer) param.args[1];
-                            if (pos == rowCount) {
-                                RecyclerView.ViewHolder vh = (RecyclerView.ViewHolder) param.args[0];
-                                if (vh != null && vh.itemView instanceof TextSettingsCell) {
-                                    TextSettingsCell cell = (TextSettingsCell) vh.itemView;
-                                    cell.setText(getSettingsButtonTitle(), false);
-                                    cell.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlueText4));
-                                    cell.setOnClickListener(new View.OnClickListener() {
-                                        @Override
-                                        public void onClick(View v) {
-                                            openProxyManagerSettings(pla);
-                                        }
-                                    });
+                            final BaseFragment pla = (BaseFragment) getPlaFromAdapter(adapter);
+                            int addRow = getProxyAddRow(pla);
+                            int rc = getRowCount(pla);
+
+                            RecyclerView.ViewHolder vh = (RecyclerView.ViewHolder) param.args[0];
+                            if (vh != null && vh.itemView instanceof TextSettingsCell) {
+                                TextSettingsCell cell = (TextSettingsCell) vh.itemView;
+                                if (addRow >= 0) {
+                                    if (pos == addRow) {
+                                        cell.setText(getQuickSearchButtonTitle(), true);
+                                        cell.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlueText4));
+                                        cell.setOnClickListener(new View.OnClickListener() {
+                                            @Override
+                                            public void onClick(View v) {
+                                                triggerQuickSearchProxy(pla);
+                                            }
+                                        });
+                                    } else if (pos == rc + 1) {
+                                        cell.setText(getSettingsButtonTitle(), false);
+                                        cell.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlueText4));
+                                        cell.setOnClickListener(new View.OnClickListener() {
+                                            @Override
+                                            public void onClick(View v) {
+                                                openProxyManagerSettings(pla);
+                                            }
+                                        });
+                                    }
+                                } else {
+                                    if (pos == rc) {
+                                        cell.setText(getQuickSearchButtonTitle(), true);
+                                        cell.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlueText4));
+                                        cell.setOnClickListener(new View.OnClickListener() {
+                                            @Override
+                                            public void onClick(View v) {
+                                                triggerQuickSearchProxy(pla);
+                                            }
+                                        });
+                                    } else if (pos == rc + 1) {
+                                        cell.setText(getSettingsButtonTitle(), false);
+                                        cell.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlueText4));
+                                        cell.setOnClickListener(new View.OnClickListener() {
+                                            @Override
+                                            public void onClick(View v) {
+                                                openProxyManagerSettings(pla);
+                                            }
+                                        });
+                                    }
                                 }
                             }
                         } catch (Throwable ignored) {}
@@ -387,6 +529,20 @@ public class Main {
         return "Proxy Manager Settings";
     }
 
+    private static String getQuickSearchButtonTitle() {
+        try {
+            LocaleController lc = LocaleController.getInstance();
+            Locale loc = lc != null ? lc.getCurrentLocale() : null;
+            if (loc != null) {
+                String lang = loc.getLanguage();
+                if (lang != null && (lang.toLowerCase().startsWith("ru") || lang.toLowerCase().startsWith("uk") || lang.toLowerCase().startsWith("be"))) {
+                    return "Быстрый поиск прокси";
+                }
+            }
+        } catch (Throwable ignored) {}
+        return "Quick Proxy Search";
+    }
+
     private static int getDrawableRes(String name) {
         try {
             Class<?> rDraw = Class.forName("org.telegram.messenger.R$drawable");
@@ -398,6 +554,8 @@ public class Main {
     }
 
     public static void unload() {
+        onQuickSearchProxy = null;
+        onAutoConnectFallback = null;
         Log.d(TAG, "DEX module unloaded");
     }
 
@@ -1006,7 +1164,15 @@ public class Main {
             }
 
             if (deleted > 0) {
+                try {
+                    Method syncM = ProxyController.class.getDeclaredMethod("syncProxyList");
+                    syncM.setAccessible(true);
+                    syncM.invoke(pc);
+                } catch (Throwable ignored) {}
                 pc.saveProxyList();
+                try {
+                    NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.proxySettingsChanged);
+                } catch (Throwable ignored) {}
             }
             return deleted;
         } catch (Throwable t) {
@@ -1092,6 +1258,9 @@ public class Main {
                 Method addM = ProxyController.class.getMethod("addProxy", piClass);
                 addM.invoke(pc, proxyInfo);
                 pc.saveProxyList();
+                try {
+                    NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.proxySettingsChanged);
+                } catch (Throwable ignored) {}
                 return true;
             }
         } catch (Throwable t) {
@@ -1100,39 +1269,175 @@ public class Main {
         return false;
     }
 
-    public static boolean pyIsProxyAdded(String link) {
+    private static String[] extractHostAndPort(String link) {
+        if (link == null || link.trim().isEmpty()) return null;
+        String raw = link.trim();
+        String tAddr = null;
+        int tPort = 0;
+
         try {
-            if (link == null || link.isEmpty()) return false;
-            Uri uri = Uri.parse(link);
-            ProxySettings target = ProxySettings.fromUri(uri);
-            if (target == null || !target.isValid()) return false;
+            if (raw.startsWith("http://") || raw.startsWith("https://") || raw.startsWith("tg://")) {
+                Uri uri = Uri.parse(raw);
+                ProxySettings target = ProxySettings.fromUri(uri);
+                if (target != null && target.isValid()) {
+                    tAddr = target.getAddress();
+                    tPort = target.getPort();
+                }
+            }
+        } catch (Throwable ignored) {}
 
-            ProxyController pc = ProxyController.getInstance();
-            ArrayList<?> list = pc.getProxyList();
-            if (list == null || list.isEmpty()) return false;
-
-            Class<?> piClass = Class.forName("org.telegram.messenger.SharedConfig$ProxyInfo");
-            Field settingsF = piClass.getField("settings");
-            String tAddr = target.getAddress();
-            int tPort = target.getPort();
-            ProxySettings.Type tType = target.getType();
-
-            for (int i = 0; i < list.size(); i++) {
-                Object pi = list.get(i);
-                if (pi == null) continue;
-                ProxySettings ps = (ProxySettings) settingsF.get(pi);
-                if (ps != null && ps.getAddress() != null) {
-                    boolean match = false;
-                    if (tType == ProxySettings.Type.WEB && ps.getType() == ProxySettings.Type.WEB) {
-                        match = ps.getAddress().equalsIgnoreCase(tAddr);
-                    } else {
-                        match = (ps.getAddress().equalsIgnoreCase(tAddr) && ps.getPort() == tPort);
-                    }
-                    if (match) {
-                        return true;
+        if (tAddr == null || tAddr.isEmpty()) {
+            int qIdx = raw.indexOf('?');
+            if (qIdx >= 0) {
+                String query = raw.substring(qIdx + 1);
+                String[] pairs = query.split("&");
+                for (String p : pairs) {
+                    int eq = p.indexOf('=');
+                    if (eq > 0) {
+                        String k = p.substring(0, eq).trim();
+                        String v = p.substring(eq + 1).trim();
+                        if ("server".equalsIgnoreCase(k) || "host".equalsIgnoreCase(k)) {
+                            try { tAddr = Uri.decode(v); } catch (Throwable ignored) { tAddr = v; }
+                        } else if ("port".equalsIgnoreCase(k)) {
+                            try { tPort = Integer.parseInt(v); } catch (Throwable ignored) {}
+                        }
                     }
                 }
             }
+        }
+
+        if (tAddr == null || tAddr.isEmpty()) {
+            String clean = raw;
+            int qIdx = clean.indexOf('?');
+            if (qIdx >= 0) clean = clean.substring(0, qIdx);
+            int sIdx = clean.indexOf("://");
+            if (sIdx >= 0) clean = clean.substring(sIdx + 3);
+            int colon = clean.indexOf(':');
+            if (colon > 0) {
+                tAddr = clean.substring(0, colon).trim();
+                try { tPort = Integer.parseInt(clean.substring(colon + 1).trim()); } catch (Throwable ignored) {}
+            } else {
+                tAddr = clean.trim();
+            }
+        }
+
+        if (tAddr == null || tAddr.isEmpty()) return null;
+        return new String[]{tAddr.trim(), String.valueOf(tPort)};
+    }
+
+    public static boolean pyClearAllProxies() {
+        try {
+            ProxyController pc = ProxyController.getInstance();
+            Class<?> piClass = Class.forName("org.telegram.messenger.SharedConfig$ProxyInfo");
+            Method delM = ProxyController.class.getMethod("deleteProxy", piClass);
+
+            // 1. Delete all proxies via deleteProxy
+            ArrayList<?> list = pc.getProxyList();
+            if (list != null) {
+                for (int i = 0; i < list.size(); i++) {
+                    Object pi = list.get(i);
+                    if (pi != null) {
+                        try {
+                            delM.invoke(pc, pi);
+                        } catch (Throwable ignored) {}
+                    }
+                }
+            }
+
+            // 2. Clear internal proxyList via reflection
+            try {
+                Field f = ProxyController.class.getDeclaredField("proxyList");
+                f.setAccessible(true);
+                ArrayList<?> internalList = (ArrayList<?>) f.get(pc);
+                if (internalList != null) {
+                    internalList.clear();
+                }
+            } catch (Throwable ignored) {}
+
+            // 3. Clear pinned proxies and custom names
+            try {
+                pc.clearAll();
+            } catch (Throwable ignored) {}
+
+            // 4. Disable and nullify currentProxy
+            try {
+                Field curF = ProxyController.class.getDeclaredField("currentProxy");
+                curF.setAccessible(true);
+                curF.set(pc, null);
+            } catch (Throwable ignored) {}
+
+            try {
+                SharedConfig.currentProxy = null;
+                if (SharedConfig.proxyList != null) {
+                    SharedConfig.proxyList.clear();
+                }
+            } catch (Throwable ignored) {}
+
+            try {
+                ConnectionsManager.setProxySettings(false, null);
+            } catch (Throwable ignored) {}
+
+            // 5. Sync and save
+            try {
+                Method syncM = ProxyController.class.getDeclaredMethod("syncProxyList");
+                syncM.setAccessible(true);
+                syncM.invoke(pc);
+            } catch (Throwable ignored) {}
+
+            pc.saveProxyList();
+
+            try {
+                NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.proxySettingsChanged);
+            } catch (Throwable ignored) {}
+
+            return true;
+        } catch (Throwable t) {
+            Log.e(TAG, "pyClearAllProxies error", t);
+            return false;
+        }
+    }
+
+    public static boolean pyIsProxyAdded(String link) {
+        try {
+            String[] hp = extractHostAndPort(link);
+            if (hp == null) return false;
+            String tAddr = hp[0];
+            int tPort = Integer.parseInt(hp[1]);
+
+            ProxyController pc = ProxyController.getInstance();
+            ArrayList<?> list = pc.getProxyList();
+            Class<?> piClass = Class.forName("org.telegram.messenger.SharedConfig$ProxyInfo");
+            Field settingsF = piClass.getField("settings");
+
+            if (list != null) {
+                for (int i = 0; i < list.size(); i++) {
+                    Object pi = list.get(i);
+                    if (pi == null) continue;
+                    ProxySettings ps = (ProxySettings) settingsF.get(pi);
+                    if (ps != null && ps.getAddress() != null) {
+                        boolean match = (tPort > 0) ?
+                            (ps.getAddress().equalsIgnoreCase(tAddr) && ps.getPort() == tPort) :
+                            ps.getAddress().equalsIgnoreCase(tAddr);
+                        if (match) return true;
+                    }
+                }
+            }
+
+            try {
+                if (SharedConfig.proxyList != null) {
+                    for (int i = 0; i < SharedConfig.proxyList.size(); i++) {
+                        Object pi = SharedConfig.proxyList.get(i);
+                        if (pi == null) continue;
+                        ProxySettings ps = (ProxySettings) settingsF.get(pi);
+                        if (ps != null && ps.getAddress() != null) {
+                            boolean match = (tPort > 0) ?
+                                (ps.getAddress().equalsIgnoreCase(tAddr) && ps.getPort() == tPort) :
+                                ps.getAddress().equalsIgnoreCase(tAddr);
+                            if (match) return true;
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {}
         } catch (Throwable t) {
             Log.e(TAG, "pyIsProxyAdded error", t);
         }
@@ -1141,43 +1446,96 @@ public class Main {
 
     public static boolean pyRemoveProxyByLink(String link) {
         try {
-            if (link == null || link.isEmpty()) return false;
-            Uri uri = Uri.parse(link);
-            ProxySettings target = ProxySettings.fromUri(uri);
-            if (target == null || !target.isValid()) return false;
+            String[] hp = extractHostAndPort(link);
+            if (hp == null) return false;
+            String tAddr = hp[0];
+            int tPort = Integer.parseInt(hp[1]);
 
             ProxyController pc = ProxyController.getInstance();
-            ArrayList<?> list = pc.getProxyList();
-            if (list == null || list.isEmpty()) return false;
-
             Class<?> piClass = Class.forName("org.telegram.messenger.SharedConfig$ProxyInfo");
             Field settingsF = piClass.getField("settings");
             Method delM = ProxyController.class.getMethod("deleteProxy", piClass);
-            String tAddr = target.getAddress();
-            int tPort = target.getPort();
-            ProxySettings.Type tType = target.getType();
 
+            ArrayList<?> internalList = null;
+            try {
+                Field f = ProxyController.class.getDeclaredField("proxyList");
+                f.setAccessible(true);
+                internalList = (ArrayList<?>) f.get(pc);
+            } catch (Throwable ignored) {}
+
+            ArrayList<?> list = pc.getProxyList();
             boolean deleted = false;
-            for (int i = 0; i < list.size(); i++) {
-                Object pi = list.get(i);
-                if (pi == null) continue;
-                ProxySettings ps = (ProxySettings) settingsF.get(pi);
-                if (ps != null && ps.getAddress() != null) {
-                    boolean match = false;
-                    if (tType == ProxySettings.Type.WEB && ps.getType() == ProxySettings.Type.WEB) {
-                        match = ps.getAddress().equalsIgnoreCase(tAddr);
-                    } else {
-                        match = (ps.getAddress().equalsIgnoreCase(tAddr) && ps.getPort() == tPort);
-                    }
-                    if (match) {
-                        delM.invoke(pc, pi);
-                        deleted = true;
-                        break;
+
+            if (list != null && !list.isEmpty()) {
+                for (int i = 0; i < list.size(); i++) {
+                    Object pi = list.get(i);
+                    if (pi == null) continue;
+                    ProxySettings ps = (ProxySettings) settingsF.get(pi);
+                    if (ps != null && ps.getAddress() != null) {
+                        boolean match = (tPort > 0) ?
+                            (ps.getAddress().equalsIgnoreCase(tAddr) && ps.getPort() == tPort) :
+                            ps.getAddress().equalsIgnoreCase(tAddr);
+                        if (match) {
+                            try {
+                                delM.invoke(pc, pi);
+                                deleted = true;
+                            } catch (Throwable ignored) {}
+                            if (internalList != null) {
+                                internalList.remove(pi);
+                                deleted = true;
+                            }
+                        }
                     }
                 }
             }
+
+            if (internalList != null) {
+                for (int i = internalList.size() - 1; i >= 0; i--) {
+                    Object pi = internalList.get(i);
+                    if (pi == null) continue;
+                    ProxySettings ps = (ProxySettings) settingsF.get(pi);
+                    if (ps != null && ps.getAddress() != null) {
+                        boolean match = (tPort > 0) ?
+                            (ps.getAddress().equalsIgnoreCase(tAddr) && ps.getPort() == tPort) :
+                            ps.getAddress().equalsIgnoreCase(tAddr);
+                        if (match) {
+                            try { delM.invoke(pc, pi); } catch (Throwable ignored) {}
+                            internalList.remove(i);
+                            deleted = true;
+                        }
+                    }
+                }
+            }
+
+            try {
+                if (SharedConfig.proxyList != null) {
+                    for (int i = SharedConfig.proxyList.size() - 1; i >= 0; i--) {
+                        Object pi = SharedConfig.proxyList.get(i);
+                        if (pi == null) continue;
+                        ProxySettings ps = (ProxySettings) settingsF.get(pi);
+                        if (ps != null && ps.getAddress() != null) {
+                            boolean match = (tPort > 0) ?
+                                (ps.getAddress().equalsIgnoreCase(tAddr) && ps.getPort() == tPort) :
+                                ps.getAddress().equalsIgnoreCase(tAddr);
+                            if (match) {
+                                SharedConfig.proxyList.remove(i);
+                                deleted = true;
+                            }
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {}
+
             if (deleted) {
+                try {
+                    Method syncM = ProxyController.class.getDeclaredMethod("syncProxyList");
+                    syncM.setAccessible(true);
+                    syncM.invoke(pc);
+                } catch (Throwable ignored) {}
                 pc.saveProxyList();
+                try {
+                    NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.proxySettingsChanged);
+                } catch (Throwable ignored) {}
                 return true;
             }
         } catch (Throwable t) {
@@ -1234,6 +1592,9 @@ public class Main {
             }
             if (added > 0) {
                 pc.saveProxyList();
+                try {
+                    NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.proxySettingsChanged);
+                } catch (Throwable ignored) {}
             }
         } catch (Throwable t) {
             Log.e(TAG, "pyAddAllProxies error", t);
@@ -1486,14 +1847,16 @@ public class Main {
             });
 
             for (JSONObject o : alive) {
-                String server = o.optString("server", "");
+                String server = o.optString("server", "").trim().toLowerCase();
                 if (!server.isEmpty() && !o.has("country")) {
-                    String geoStr = pyResolveCountry(server);
-                    try {
-                        JSONObject geoJson = new JSONObject(geoStr);
-                        o.put("country", geoJson.optString("country", "Unknown"));
-                        o.put("country_code", geoJson.optString("country_code", ""));
-                    } catch (Throwable ignored) {}
+                    String cached = GEO_CACHE.get(server);
+                    if (cached != null) {
+                        try {
+                            JSONObject geoJson = new JSONObject(cached);
+                            o.put("country", geoJson.optString("country", "Unknown"));
+                            o.put("country_code", geoJson.optString("country_code", ""));
+                        } catch (Throwable ignored) {}
+                    }
                 }
             }
 
@@ -1688,19 +2051,6 @@ public class Main {
 
     public static String pyRemoveDeadProxies(final int timeoutMs, final boolean safetyNoWipe, final String protectedKeysJson) {
         try {
-            boolean proxyEnabled = false;
-            try {
-                proxyEnabled = SharedConfig.isProxyEnabled();
-            } catch (Throwable ignored) {}
-            if (!proxyEnabled) {
-                JSONObject res = new JSONObject();
-                res.put("deleted", 0);
-                res.put("kept", 0);
-                res.put("aborted", true);
-                res.put("reason", "proxy_disabled");
-                return res.toString();
-            }
-
             final ProxyController pc = ProxyController.getInstance();
             ArrayList<?> list = pc.getProxyList();
             if (list == null || list.isEmpty()) {
@@ -1709,6 +2059,16 @@ public class Main {
                 res.put("kept", 0);
                 return res.toString();
             }
+
+            final Class<?> piClass = Class.forName("org.telegram.messenger.SharedConfig$ProxyInfo");
+            final Field settingsF = piClass.getField("settings");
+            final Field availF = piClass.getField("available");
+            final Field availTimeF = piClass.getField("availableCheckTime");
+
+            Method curM = ProxyController.class.getMethod("getCurrentProxy");
+            Object curPi = null;
+            try { curPi = curM.invoke(pc); } catch (Throwable ignored) {}
+            final Object currentActivePi = curPi;
 
             final java.util.HashSet<String> protectedKeys = new java.util.HashSet<String>();
             if (protectedKeysJson != null && !protectedKeysJson.trim().isEmpty()) {
@@ -1725,16 +2085,17 @@ public class Main {
             int threads = Math.min(snapshot.size(), 16);
             ExecutorService pool = Executors.newFixedThreadPool(threads > 0 ? threads : 1);
             List<Future<Boolean>> futures = new ArrayList<Future<Boolean>>();
-            final Class<?> piClass = Class.forName("org.telegram.messenger.SharedConfig$ProxyInfo");
-            final Field settingsF = piClass.getField("settings");
-            final Field availF = piClass.getField("available");
-            final Field availTimeF = piClass.getField("availableCheckTime");
+            final int effectiveTimeout = Math.max(3500, timeoutMs);
 
             for (final Object pi : snapshot) {
                 futures.add(pool.submit(new Callable<Boolean>() {
                     @Override
                     public Boolean call() {
                         try {
+                            if (pi == null) return false;
+                            // NEVER delete current active proxy
+                            if (pi == currentActivePi) return true;
+
                             ProxySettings ps = (ProxySettings) settingsF.get(pi);
                             if (ps == null || !ps.isValid()) return false;
 
@@ -1744,17 +2105,22 @@ public class Main {
                                 return true;
                             }
 
+                            // If Telegram confirmed it working within the last 30 minutes, it is 100% alive!
                             try {
                                 boolean av = availF.getBoolean(pi);
                                 long avTime = availTimeF.getLong(pi);
-                                if (avTime > 0 && !av) {
-                                    return false; // Telegram says unavailable -> dead!
+                                if (av && avTime > 0 && (SystemClock.elapsedRealtime() - avTime < 1800000)) {
+                                    return true;
                                 }
                             } catch (Throwable ignored) {}
 
                             String type = ps.getType() == ProxySettings.Type.WEB ? "WebProxy" : (ps.getType() == ProxySettings.Type.SOCKS5 ? "SOCKS5" : "MTProto");
                             int port = ps.getPort() > 0 ? ps.getPort() : 443;
-                            int ping = pyCheckProxy(type, ps.getAddress(), port, timeoutMs);
+                            int ping = pyCheckProxy(type, ps.getAddress(), port, effectiveTimeout);
+                            if (ping < 0) {
+                                // Retry once to prevent false drops on mobile network jitter
+                                ping = pyCheckProxy(type, ps.getAddress(), port, 2500);
+                            }
                             return ping >= 0;
                         } catch (Throwable ignored) {
                             return false;
@@ -1771,22 +2137,26 @@ public class Main {
                 } catch (Throwable ignored) {}
             }
 
-            if (safetyNoWipe && aliveCount == 0 && snapshot.size() > 1) {
-                JSONObject res = new JSONObject();
-                res.put("deleted", 0);
-                res.put("kept", snapshot.size());
-                res.put("aborted", true);
-                res.put("reason", "all_failed");
-                return res.toString();
+            if (safetyNoWipe && snapshot.size() >= 3) {
+                if (aliveCount == 0 || (aliveCount < snapshot.size() * 0.25 && snapshot.size() >= 5)) {
+                    JSONObject res = new JSONObject();
+                    res.put("deleted", 0);
+                    res.put("kept", snapshot.size());
+                    res.put("aborted", true);
+                    res.put("reason", "mass_failure");
+                    return res.toString();
+                }
             }
-
-// Removed premature mass_failure abort so actual dead proxies can be cleaned
 
             int deleted = 0;
             int kept = 0;
             Method delM = ProxyController.class.getMethod("deleteProxy", piClass);
             for (int i = 0; i < snapshot.size(); i++) {
                 Object pi = snapshot.get(i);
+                if (pi == null || pi == currentActivePi) {
+                    kept++;
+                    continue;
+                }
                 boolean alive = false;
                 try {
                     alive = futures.get(i).get();
@@ -1798,7 +2168,17 @@ public class Main {
                     deleted++;
                 }
             }
-            pc.saveProxyList();
+            if (deleted > 0) {
+                try {
+                    Method syncM = ProxyController.class.getDeclaredMethod("syncProxyList");
+                    syncM.setAccessible(true);
+                    syncM.invoke(pc);
+                } catch (Throwable ignored) {}
+                pc.saveProxyList();
+                try {
+                    NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.proxySettingsChanged);
+                } catch (Throwable ignored) {}
+            }
             JSONObject res = new JSONObject();
             res.put("deleted", deleted);
             res.put("kept", kept);
@@ -1831,18 +2211,6 @@ public class Main {
 
     public static String pyKeepTopProxies(final int keepCount, final int timeoutMs) {
         try {
-            boolean proxyEnabled = false;
-            try {
-                proxyEnabled = SharedConfig.isProxyEnabled();
-            } catch (Throwable ignored) {}
-            if (!proxyEnabled) {
-                JSONObject res = new JSONObject();
-                res.put("deleted", 0);
-                res.put("kept", 0);
-                res.put("aborted", true);
-                return res.toString();
-            }
-
             final ProxyController pc = ProxyController.getInstance();
             ArrayList<?> list = pc.getProxyList();
             if (list == null || list.isEmpty()) {
@@ -1852,6 +2220,11 @@ public class Main {
                 return res.toString();
             }
 
+            Method curM = ProxyController.class.getMethod("getCurrentProxy");
+            Object curPi = null;
+            try { curPi = curM.invoke(pc); } catch (Throwable ignored) {}
+            final Object currentActivePi = curPi;
+
             final ArrayList<Object> snapshot = new ArrayList<Object>(list);
             int threads = Math.min(snapshot.size(), 16);
             ExecutorService pool = Executors.newFixedThreadPool(threads > 0 ? threads : 1);
@@ -1860,6 +2233,7 @@ public class Main {
             final Field availF = piClass.getField("available");
             final Field availTimeF = piClass.getField("availableCheckTime");
             final Field pingF = piClass.getField("ping");
+            final int effectiveTimeout = Math.max(3500, timeoutMs);
 
             final class TestedProxy {
                 Object pi;
@@ -1873,6 +2247,9 @@ public class Main {
                     @Override
                     public TestedProxy call() {
                         try {
+                            if (pi == null) return new TestedProxy(null, -1);
+                            if (pi == currentActivePi) return new TestedProxy(pi, 1);
+
                             ProxySettings ps = (ProxySettings) settingsF.get(pi);
                             if (ps == null || !ps.isValid()) return new TestedProxy(pi, -1);
 
@@ -1880,18 +2257,17 @@ public class Main {
                                 boolean av = availF.getBoolean(pi);
                                 long avTime = availTimeF.getLong(pi);
                                 long p = pingF.getLong(pi);
-                                if (avTime > 0) {
-                                    if (!av) {
-                                        return new TestedProxy(pi, -1);
-                                    } else {
-                                        return new TestedProxy(pi, (int) Math.max(1, p));
-                                    }
+                                if (av && avTime > 0 && (SystemClock.elapsedRealtime() - avTime < 1800000)) {
+                                    return new TestedProxy(pi, (int) Math.max(1, p));
                                 }
                             } catch (Throwable ignored) {}
 
                             String type = ps.getType() == ProxySettings.Type.WEB ? "WebProxy" : (ps.getType() == ProxySettings.Type.SOCKS5 ? "SOCKS5" : "MTProto");
                             int port = ps.getPort() > 0 ? ps.getPort() : 443;
-                            int ping = pyCheckProxy(type, ps.getAddress(), port, timeoutMs);
+                            int ping = pyCheckProxy(type, ps.getAddress(), port, effectiveTimeout);
+                            if (ping < 0) {
+                                ping = pyCheckProxy(type, ps.getAddress(), port, 2500);
+                            }
                             return new TestedProxy(pi, ping);
                         } catch (Throwable ignored) {
                             return new TestedProxy(pi, -1);
@@ -1906,9 +2282,9 @@ public class Main {
             for (Future<TestedProxy> f : futures) {
                 try {
                     TestedProxy tp = f.get();
-                    if (tp != null && tp.ping >= 0) {
+                    if (tp != null && tp.pi != null && tp.ping >= 0) {
                         aliveList.add(tp);
-                    } else if (tp != null) {
+                    } else if (tp != null && tp.pi != null && tp.pi != currentActivePi) {
                         deadList.add(tp.pi);
                     }
                 } catch (Throwable ignored) {}
@@ -1932,6 +2308,7 @@ public class Main {
             Method delM = ProxyController.class.getMethod("deleteProxy", piClass);
             int deleted = 0;
             for (Object d : deadList) {
+                if (d == currentActivePi) continue;
                 delM.invoke(pc, d);
                 deleted++;
             }
@@ -1939,7 +2316,7 @@ public class Main {
             int kept = 0;
             for (int i = 0; i < aliveList.size(); i++) {
                 TestedProxy tp = aliveList.get(i);
-                if (i < keepCount) {
+                if (i < keepCount || tp.pi == currentActivePi) {
                     kept++;
                 } else {
                     delM.invoke(pc, tp.pi);
@@ -1947,7 +2324,15 @@ public class Main {
                 }
             }
 
+            try {
+                Method syncM = ProxyController.class.getDeclaredMethod("syncProxyList");
+                syncM.setAccessible(true);
+                syncM.invoke(pc);
+            } catch (Throwable ignored) {}
             pc.saveProxyList();
+            try {
+                NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.proxySettingsChanged);
+            } catch (Throwable ignored) {}
             JSONObject res = new JSONObject();
             res.put("deleted", deleted);
             res.put("kept", kept);
