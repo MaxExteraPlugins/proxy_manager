@@ -19,6 +19,7 @@ import org.telegram.messenger.SharedConfig;
 import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.browser.Browser;
 import org.telegram.tgnet.ConnectionsManager;
+import org.telegram.tgnet.RequestTimeDelegate;
 import org.telegram.ui.LaunchActivity;
 import org.telegram.utils.proxy.ProxySettings;
 
@@ -41,9 +42,11 @@ import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import android.view.View;
 import org.telegram.messenger.LocaleController;
 import org.telegram.ui.ActionBar.ActionBar;
@@ -58,8 +61,8 @@ import androidx.recyclerview.widget.RecyclerView;
 public class Main {
     private static final String TAG = "ProxyManager";
     private static final java.util.concurrent.ConcurrentHashMap<String, String> GEO_CACHE = new java.util.concurrent.ConcurrentHashMap<String, String>();
-    public static final String VERSION = "1.0.33";
-    public static final int VERSION_CODE = 33;
+    public static final String VERSION = "1.0.38";
+    public static final int VERSION_CODE = 38;
 
     public static volatile boolean autoConnectEnabled = true;
     public static volatile Runnable onAutoConnectFallback = null;
@@ -266,28 +269,28 @@ public class Main {
                                             int rc = getRowCount(fragment);
                                             if (addRow >= 0) {
                                                 if (position == addRow) {
-                                                    triggerQuickSearchProxy(fragment);
+                                                    openProxyManagerSettings(fragment);
                                                     return;
                                                 } else if (position == addRow + 1) {
+                                                    triggerQuickSearchProxy(fragment);
+                                                    return;
+                                                } else if (position == addRow + 2) {
                                                     if (orig != null) {
                                                         orig.onItemClick(view, addRow);
                                                     }
                                                     return;
-                                                } else if (position == rc + 1) {
-                                                    openProxyManagerSettings(fragment);
-                                                    return;
-                                                } else if (position > addRow + 1 && position <= rc) {
+                                                } else if (position > addRow + 2) {
                                                     if (orig != null) {
-                                                        orig.onItemClick(view, position - 1);
+                                                        orig.onItemClick(view, position - 2);
                                                     }
                                                     return;
                                                 }
                                             } else {
                                                 if (position == rc) {
-                                                    triggerQuickSearchProxy(fragment);
+                                                    openProxyManagerSettings(fragment);
                                                     return;
                                                 } else if (position == rc + 1) {
-                                                    openProxyManagerSettings(fragment);
+                                                    triggerQuickSearchProxy(fragment);
                                                     return;
                                                 }
                                             }
@@ -328,14 +331,12 @@ public class Main {
                         int rc = getRowCount(pla);
                         int pos = (Integer) param.args[0];
                         if (addRow >= 0) {
-                            if (pos == addRow) {
-                                param.setResult(1); // 1 = TextSettingsCell (Quick Search)
-                            } else if (pos == addRow + 1) {
-                                param.setResult(1); // Systemic "Add Proxy"
-                            } else if (pos > addRow + 1 && pos <= rc) {
-                                param.args[0] = pos - 1;
-                            } else if (pos == rc + 1) {
-                                param.setResult(1); // Proxy Manager Settings
+                            if (pos == addRow || pos == addRow + 1) {
+                                param.setResult(1); // 1 = TextSettingsCell
+                            } else if (pos == addRow + 2) {
+                                param.args[0] = addRow; // Systemic "Add Proxy"
+                            } else if (pos > addRow + 2) {
+                                param.args[0] = pos - 2;
                             }
                         } else {
                             if (pos == rc || pos == rc + 1) {
@@ -366,7 +367,9 @@ public class Main {
                                 int addRow = getProxyAddRow(pla);
                                 int rc = getRowCount(pla);
                                 if (addRow >= 0) {
-                                    if (pos == addRow || pos == addRow + 1 || pos == rc + 1) {
+                                    if (pos == addRow || pos == addRow + 1 || pos == addRow + 2) {
+                                        param.setResult(true);
+                                    } else if (pos > addRow + 2 && vh.itemView != null && vh.itemView.getClass().getSimpleName().contains("Proxy")) {
                                         param.setResult(true);
                                     }
                                 } else {
@@ -400,14 +403,10 @@ public class Main {
                             int addRow = getProxyAddRow(pla);
                             int rc = getRowCount(pla);
                             if (addRow >= 0) {
-                                if (pos == addRow) {
+                                if (pos == addRow || pos == addRow + 1 || pos == addRow + 2) {
                                     param.args[1] = addRow;
-                                } else if (pos == addRow + 1) {
-                                    param.args[1] = addRow;
-                                } else if (pos > addRow + 1 && pos <= rc) {
-                                    param.args[1] = pos - 1;
-                                } else if (pos == rc + 1) {
-                                    param.args[1] = addRow;
+                                } else if (pos > addRow + 2) {
+                                    param.args[1] = pos - 2;
                                 }
                             } else {
                                 if (pos >= rc) {
@@ -433,6 +432,15 @@ public class Main {
                                 TextSettingsCell cell = (TextSettingsCell) vh.itemView;
                                 if (addRow >= 0) {
                                     if (pos == addRow) {
+                                        cell.setText(getSettingsButtonTitle(), true);
+                                        cell.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlueText4));
+                                        cell.setOnClickListener(new View.OnClickListener() {
+                                            @Override
+                                            public void onClick(View v) {
+                                                openProxyManagerSettings(pla);
+                                            }
+                                        });
+                                    } else if (pos == addRow + 1) {
                                         cell.setText(getQuickSearchButtonTitle(), true);
                                         cell.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlueText4));
                                         cell.setOnClickListener(new View.OnClickListener() {
@@ -441,28 +449,13 @@ public class Main {
                                                 triggerQuickSearchProxy(pla);
                                             }
                                         });
-                                    } else if (pos == rc + 1) {
-                                        cell.setText(getSettingsButtonTitle(), false);
-                                        cell.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlueText4));
-                                        cell.setOnClickListener(new View.OnClickListener() {
-                                            @Override
-                                            public void onClick(View v) {
-                                                openProxyManagerSettings(pla);
-                                            }
-                                        });
+                                    } else {
+                                        cell.setOnClickListener(null);
+                                        cell.setClickable(false);
                                     }
                                 } else {
                                     if (pos == rc) {
-                                        cell.setText(getQuickSearchButtonTitle(), true);
-                                        cell.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlueText4));
-                                        cell.setOnClickListener(new View.OnClickListener() {
-                                            @Override
-                                            public void onClick(View v) {
-                                                triggerQuickSearchProxy(pla);
-                                            }
-                                        });
-                                    } else if (pos == rc + 1) {
-                                        cell.setText(getSettingsButtonTitle(), false);
+                                        cell.setText(getSettingsButtonTitle(), true);
                                         cell.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlueText4));
                                         cell.setOnClickListener(new View.OnClickListener() {
                                             @Override
@@ -470,6 +463,18 @@ public class Main {
                                                 openProxyManagerSettings(pla);
                                             }
                                         });
+                                    } else if (pos == rc + 1) {
+                                        cell.setText(getQuickSearchButtonTitle(), false);
+                                        cell.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlueText4));
+                                        cell.setOnClickListener(new View.OnClickListener() {
+                                            @Override
+                                            public void onClick(View v) {
+                                                triggerQuickSearchProxy(pla);
+                                            }
+                                        });
+                                    } else {
+                                        cell.setOnClickListener(null);
+                                        cell.setClickable(false);
                                     }
                                 }
                             }
@@ -1092,33 +1097,37 @@ public class Main {
             }
 
             int deleted = 0;
+            int remaining = list.size();
 
-            if (policy == 0) {
-                // Policy 0: Replace dead first, then slowest
-                for (int i = list.size() - 1; i >= 0 && list.size() > maxCount; i--) {
-                    Object pi = list.get(i);
-                    if (pi == null || pi == curPi) continue;
-                    try {
-                        ProxySettings ps = (ProxySettings) settingsF.get(pi);
-                        if (ps != null) {
-                            String k1 = (ps.getAddress() + ":" + ps.getPort()).toLowerCase();
-                            String k2 = ps.getAddress().toLowerCase();
-                            if (protectedKeys.contains(k1) || protectedKeys.contains(k2)) continue;
-                        }
-                        boolean isDead = false;
-                        long avTime = availTimeF.getLong(pi);
-                        boolean av = availF.getBoolean(pi);
-                        if (avTime > 0 && !av) isDead = true;
+            // Pass 1: remove dead proxies first (skipping current & protected)
+            for (int i = list.size() - 1; i >= 0 && remaining > maxCount; i--) {
+                Object pi = list.get(i);
+                if (pi == null || pi == curPi) continue;
+                try {
+                    ProxySettings ps = (ProxySettings) settingsF.get(pi);
+                    if (ps != null) {
+                        String k1 = (ps.getAddress() + ":" + ps.getPort()).toLowerCase();
+                        String k2 = ps.getAddress().toLowerCase();
+                        if (protectedKeys.contains(k1) || protectedKeys.contains(k2)) continue;
+                    }
+                    boolean isDead = false;
+                    long avTime = availTimeF.getLong(pi);
+                    boolean av = availF.getBoolean(pi);
+                    if (avTime > 0 && !av) isDead = true;
 
-                        if (isDead) {
-                            delM.invoke(pc, pi);
-                            deleted++;
-                        }
-                    } catch (Throwable ignored) {}
-                }
+                    if (isDead) {
+                        delM.invoke(pc, pi);
+                        deleted++;
+                        remaining--;
+                    }
+                } catch (Throwable ignored) {}
+            }
 
-                if (list.size() > maxCount) {
-                    ArrayList<Object> sorted = new ArrayList<Object>(list);
+            // Pass 2: remove non-protected proxies (oldest/slowest) until remaining <= maxCount
+            if (remaining > maxCount) {
+                ArrayList<?> currentList = pc.getProxyList();
+                if (currentList != null) {
+                    ArrayList<Object> sorted = new ArrayList<Object>(currentList);
                     Collections.sort(sorted, new Comparator<Object>() {
                         @Override
                         public int compare(Object a, Object b) {
@@ -1130,7 +1139,7 @@ public class Main {
                     });
 
                     for (Object pi : sorted) {
-                        if (list.size() <= maxCount) break;
+                        if (remaining <= maxCount) break;
                         if (pi == null || pi == curPi) continue;
                         try {
                             ProxySettings ps = (ProxySettings) settingsF.get(pi);
@@ -1141,25 +1150,25 @@ public class Main {
                             }
                             delM.invoke(pc, pi);
                             deleted++;
+                            remaining--;
                         } catch (Throwable ignored) {}
                     }
                 }
-            } else {
-                // Policy 1: Replace oldest (from head of list, skipping protected & current)
-                for (int i = 0; i < list.size() && list.size() > maxCount; i++) {
-                    Object pi = list.get(i);
-                    if (pi == null || pi == curPi) continue;
-                    try {
-                        ProxySettings ps = (ProxySettings) settingsF.get(pi);
-                        if (ps != null) {
-                            String k1 = (ps.getAddress() + ":" + ps.getPort()).toLowerCase();
-                            String k2 = ps.getAddress().toLowerCase();
-                            if (protectedKeys.contains(k1) || protectedKeys.contains(k2)) continue;
-                        }
-                        delM.invoke(pc, pi);
-                        deleted++;
-                        i--;
-                    } catch (Throwable ignored) {}
+            }
+
+            // Pass 3: strict enforcement - never exceed maxCount even if all are recently added
+            if (remaining > maxCount) {
+                ArrayList<?> currentList = pc.getProxyList();
+                if (currentList != null) {
+                    for (int i = currentList.size() - 1; i >= 0 && remaining > maxCount; i--) {
+                        Object pi = currentList.get(i);
+                        if (pi == null || pi == curPi) continue;
+                        try {
+                            delM.invoke(pc, pi);
+                            deleted++;
+                            remaining--;
+                        } catch (Throwable ignored) {}
+                    }
                 }
             }
 
@@ -1219,9 +1228,12 @@ public class Main {
 
                     String t = ps.getType() == ProxySettings.Type.WEB ? "WebProxy" : (ps.getType() == ProxySettings.Type.SOCKS5 ? "SOCKS5" : "MTProto");
                     int port = ps.getPort() > 0 ? ps.getPort() : 443;
-                    int ping = pyCheckProxy(t, ps.getAddress(), port, timeoutMs);
-                    if (ping >= 0) {
-                        return ps;
+                    int tcpPing = pyCheckProxy(t, ps.getAddress(), port, Math.min(timeoutMs, 1500));
+                    if (tcpPing >= 0) {
+                        int realPing = checkProxyReal(ps, timeoutMs);
+                        if (realPing >= 0) {
+                            return ps;
+                        }
                     }
                 }
             }
@@ -1619,6 +1631,42 @@ public class Main {
         }
     }
 
+    public static int pyGetConnectionState() {
+        try {
+            int account = UserConfig.selectedAccount;
+            return ConnectionsManager.getInstance(account).getConnectionState();
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
+    public static boolean pyTryEnableAliveSavedProxy(int timeoutMs) {
+        try {
+            ProxySettings working = findFirstAliveProxy(timeoutMs > 0 ? timeoutMs : 1500);
+            if (working != null && working.isValid()) {
+                applyProxySettings(working);
+                try {
+                    android.content.SharedPreferences.Editor editor = org.telegram.messenger.MessagesController.getGlobalMainSettings().edit();
+                    editor.putBoolean("proxy_enabled", true);
+                    working.toSharedPreferences(editor);
+                    editor.apply();
+                } catch (Throwable ignored) {}
+                ConnectionsManager.setProxySettings(true, working);
+                try {
+                    NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.proxySettingsChanged);
+                } catch (Throwable ignored) {}
+                return true;
+            }
+        } catch (Throwable t) {
+            Log.e(TAG, "pyTryEnableAliveSavedProxy error", t);
+        }
+        return false;
+    }
+
+    public static boolean pyTryEnableAliveSavedProxy(long timeoutMs) {
+        return pyTryEnableAliveSavedProxy((int) timeoutMs);
+    }
+
     public static boolean pyApplyProxy(String link) {
         try {
             if (link == null || link.isEmpty()) return false;
@@ -1634,7 +1682,16 @@ public class Main {
                 Method setCurM = ProxyController.class.getMethod("setCurrentProxy", piClass);
                 setCurM.invoke(pc, addedInfo != null ? addedInfo : proxyInfo);
                 pc.saveProxyList();
+                try {
+                    android.content.SharedPreferences.Editor editor = org.telegram.messenger.MessagesController.getGlobalMainSettings().edit();
+                    editor.putBoolean("proxy_enabled", true);
+                    settings.toSharedPreferences(editor);
+                    editor.apply();
+                } catch (Throwable ignored) {}
                 ConnectionsManager.setProxySettings(true, settings);
+                try {
+                    NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.proxySettingsChanged);
+                } catch (Throwable ignored) {}
                 return true;
             }
         } catch (Throwable t) {
@@ -1790,6 +1847,55 @@ public class Main {
         return "{}";
     }
 
+    private static ProxySettings parseProxySettingsFromLink(String link) {
+        if (link == null || link.trim().isEmpty()) return null;
+        String norm = link.trim();
+        if (norm.startsWith("tg:proxy?")) norm = "tg://proxy?" + norm.substring(9);
+        else if (norm.startsWith("tg:socks?")) norm = "tg://socks?" + norm.substring(9);
+        else if (norm.startsWith("tg:webproxy?")) norm = "tg://webproxy?" + norm.substring(12);
+        try {
+            return ProxySettings.fromUri(Uri.parse(norm));
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static int checkProxyReal(final ProxySettings settings, int timeoutMs) {
+        if (settings == null || !settings.isValid()) return -1;
+        try {
+            final long[] result = new long[]{-1L};
+            final CountDownLatch latch = new CountDownLatch(1);
+            final int account = UserConfig.selectedAccount;
+            AndroidUtilities.runOnUIThread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        long reqId = ConnectionsManager.getInstance(account).checkProxy(settings, new RequestTimeDelegate() {
+                            @Override
+                            public void run(long time) {
+                                result[0] = time;
+                                latch.countDown();
+                            }
+                        });
+                        if (reqId == 0 && settings.getType() != ProxySettings.Type.WEB) {
+                            latch.countDown();
+                        }
+                    } catch (Throwable t) {
+                        Log.e(TAG, "checkProxyReal UI dispatch error", t);
+                        latch.countDown();
+                    }
+                }
+            });
+            long waitMs = Math.max(7000L, (long) timeoutMs * 2L);
+            boolean finished = latch.await(waitMs, TimeUnit.MILLISECONDS);
+            if (!finished) return -1;
+            return result[0] >= 0 ? (int) result[0] : -1;
+        } catch (Throwable t) {
+            Log.e(TAG, "checkProxyReal error", t);
+            return -1;
+        }
+    }
+
     public static String pyBatchCheck(String jsonProxies, int timeoutMs) {
         try {
             JSONArray arr = new JSONArray(jsonProxies);
@@ -1815,12 +1921,23 @@ public class Main {
                             }
                             if (server.isEmpty() || port <= 0) return null;
 
-                            int ping = pyCheckProxy(type, server, port, finalTimeout);
-                            if (ping >= 0) {
-                                JSONObject res = new JSONObject(item.toString());
-                                res.put("ping", ping);
-                                return res;
+                            // Stage 1: fast TCP pre-filter
+                            int tcpPing = pyCheckProxy(type, server, port, Math.min(finalTimeout, 1500));
+                            if (tcpPing < 0) return null;
+
+                            // Stage 2: real Telegram native checkProxy verification
+                            String link = item.optString("link", "");
+                            if (link.isEmpty()) link = item.optString("url", "");
+                            ProxySettings ps = parseProxySettingsFromLink(link);
+                            int realPing = tcpPing;
+                            if (ps != null && ps.isValid()) {
+                                realPing = checkProxyReal(ps, finalTimeout);
+                                if (realPing < 0) return null;
                             }
+
+                            JSONObject res = new JSONObject(item.toString());
+                            res.put("ping", realPing);
+                            return res;
                         } catch (Throwable ignored) {}
                         return null;
                     }
@@ -2116,10 +2233,13 @@ public class Main {
 
                             String type = ps.getType() == ProxySettings.Type.WEB ? "WebProxy" : (ps.getType() == ProxySettings.Type.SOCKS5 ? "SOCKS5" : "MTProto");
                             int port = ps.getPort() > 0 ? ps.getPort() : 443;
-                            int ping = pyCheckProxy(type, ps.getAddress(), port, effectiveTimeout);
+                            int ping = pyCheckProxy(type, ps.getAddress(), port, Math.min(effectiveTimeout, 1500));
                             if (ping < 0) {
                                 // Retry once to prevent false drops on mobile network jitter
-                                ping = pyCheckProxy(type, ps.getAddress(), port, 2500);
+                                ping = pyCheckProxy(type, ps.getAddress(), port, 2000);
+                            }
+                            if (ping >= 0) {
+                                ping = checkProxyReal(ps, effectiveTimeout);
                             }
                             return ping >= 0;
                         } catch (Throwable ignored) {
@@ -2264,9 +2384,12 @@ public class Main {
 
                             String type = ps.getType() == ProxySettings.Type.WEB ? "WebProxy" : (ps.getType() == ProxySettings.Type.SOCKS5 ? "SOCKS5" : "MTProto");
                             int port = ps.getPort() > 0 ? ps.getPort() : 443;
-                            int ping = pyCheckProxy(type, ps.getAddress(), port, effectiveTimeout);
+                            int ping = pyCheckProxy(type, ps.getAddress(), port, Math.min(effectiveTimeout, 1500));
                             if (ping < 0) {
-                                ping = pyCheckProxy(type, ps.getAddress(), port, 2500);
+                                ping = pyCheckProxy(type, ps.getAddress(), port, 2000);
+                            }
+                            if (ping >= 0) {
+                                ping = checkProxyReal(ps, effectiveTimeout);
                             }
                             return new TestedProxy(pi, ping);
                         } catch (Throwable ignored) {

@@ -35,7 +35,7 @@ __id__ = "proxy_manager"
 __name__ = "Proxy Manager"
 __description__ = "Поиск и проверка рабочих MTProto, WebProxy и SOCKS5 прокси из каналов Telegram."
 __author__ = "@itNotMax - @MaxExteraPlugins"
-__version__ = "1.0.33"
+__version__ = "1.0.38"
 __icon__ = "MaxExteraPluginsStickers/35"
 __min_version__ = "12.10.6"
 
@@ -561,6 +561,26 @@ class L:
         "auto_connect_enable_sub": {
             "ru": "Подключает рабочий прокси, если текущий не отвечает",
             "en": "Connects a working proxy if current is unreachable",
+        },
+        "auto_enable_no_conn_title": {
+            "ru": "Авто-поиск при отсутствии связи",
+            "en": "Auto-search when disconnected",
+        },
+        "auto_enable_no_conn_sub": {
+            "ru": "Если нет связи с Telegram и прокси выключены — включить и найти рабочий",
+            "en": "If Telegram has no connection and proxy is OFF — enable and find a working one",
+        },
+        "auto_enable_no_conn_triggered": {
+            "ru": "Нет связи с Telegram — включаем прокси и подключаем рабочий...",
+            "en": "No Telegram connection — enabling proxy and connecting...",
+        },
+        "auto_enable_no_conn_delay_title": {
+            "ru": "Задержка перед авто-поиском",
+            "en": "Delay before auto-search",
+        },
+        "auto_enable_no_conn_delay_sub": {
+            "ru": "Сколько секунд ждать (например, пока загрузится VPN)",
+            "en": "Seconds to wait (e.g. for VPN to connect)",
         },
         "proxy_limit_title": {
             "ru": "Лимит размера списка",
@@ -2556,25 +2576,52 @@ class Plugin(BasePlugin):
         def loop():
             last_bytes = -1
             stalled_seconds = 0
+            no_conn_seconds = 0
             last_switch_time = 0.0
             last_stat_time = 0.0
+            last_auto_enable_time = 0.0
 
             while getattr(self, "_watchdog_running", False):
                 time.sleep(1.0)
                 try:
+                    now = time.time()
+                    from org.telegram.messenger import SharedConfig
+                    proxy_enabled = bool(SharedConfig.isProxyEnabled())
+
+                    # Auto-enable proxy & search when Telegram has no connection and proxy is OFF
+                    if not proxy_enabled:
+                        stalled_seconds = 0
+                        last_bytes = -1
+                        if bool(self.get_setting("auto_enable_no_conn", True)) and not getattr(self, "_is_quick_searching", False):
+                            if now - last_auto_enable_time >= 60.0:
+                                conn_state = _call_dex("pyGetConnectionState")
+                                # 1 == ConnectionStateConnecting (has network, failing to reach DC directly)
+                                if conn_state == 1:
+                                    no_conn_seconds += 1
+                                    delay_sec = int(self.get_setting("auto_enable_no_conn_delay", 3))
+                                    if no_conn_seconds >= delay_sec:
+                                        no_conn_seconds = 0
+                                        last_auto_enable_time = now
+                                        threading.Thread(
+                                            target=self._auto_enable_on_no_connection_worker,
+                                            daemon=True,
+                                            name="ProxyAutoEnableNoConn",
+                                        ).start()
+                                else:
+                                    no_conn_seconds = 0
+                            else:
+                                no_conn_seconds = 0
+                        else:
+                            no_conn_seconds = 0
+                        continue
+
+                    no_conn_seconds = 0
                     if not bool(self.get_setting("auto_switch_enabled", True)) or not bool(self.get_setting("auto_switch_media", True)):
                         stalled_seconds = 0
                         last_bytes = -1
                         continue
 
-                    now = time.time()
                     if now - last_switch_time < 15.0:
-                        stalled_seconds = 0
-                        last_bytes = -1
-                        continue
-
-                    from org.telegram.messenger import SharedConfig
-                    if not SharedConfig.isProxyEnabled():
                         stalled_seconds = 0
                         last_bytes = -1
                         continue
@@ -3004,7 +3051,7 @@ class Plugin(BasePlugin):
         (3600, "1 час"),
     ]
 
-    MAX_COUNT_CHOICES = [10, 20, 30, 50, 100]
+    MAX_COUNT_CHOICES = [10, 20, 30, 50, 100, 150, 200, 300]
 
     STRATEGY_CHOICES = [
         (0, "Наименьший пинг"),
@@ -3024,6 +3071,15 @@ class Plugin(BasePlugin):
         (12, "12 сек (Умеренно)"),
         (15, "15 сек (Медленно)"),
         (20, "20 сек (Для медленной сети)"),
+    ]
+
+    NO_CONN_DELAY_CHOICES = [
+        (2, "2 сек (Быстро)"),
+        (3, "3 сек (По умолчанию)"),
+        (5, "5 сек"),
+        (8, "8 сек"),
+        (12, "12 сек"),
+        (15, "15 сек"),
     ]
 
     def _format_interval(self, mins):
@@ -3100,6 +3156,41 @@ class Plugin(BasePlugin):
                     pass
                 run_on_ui_thread(lambda: BulletinHelper.show_info(f"{L.g('proxy_cooldown_duration_title')}: {plugin.COOLDOWN_CHOICES[which][1]}"))
 
+        b.set_items(options, on_choice)
+        b.set_negative_button(L.g("cancel"), lambda d, w: d.dismiss())
+        b.show()
+
+    def _get_no_conn_delay_label(self):
+        val = int(self.get_setting("auto_enable_no_conn_delay", 3))
+        for sec, label in self.NO_CONN_DELAY_CHOICES:
+            if sec == val:
+                return label
+        return f"{val} сек"
+
+    def _show_no_conn_delay_picker(self, *args):
+        view = args[0] if args else None
+        act, frag = _get_context_and_fragment(view)
+        if not act:
+            act = _get_act()
+        if not act:
+            return
+        options = [label for _, label in self.NO_CONN_DELAY_CHOICES]
+        b = AlertDialogBuilder(act)
+        b.set_title(L.g("auto_enable_no_conn_delay_title"))
+        plugin = self
+        def on_choice(d, which):
+            d.dismiss()
+            if 0 <= which < len(plugin.NO_CONN_DELAY_CHOICES):
+                val, label = plugin.NO_CONN_DELAY_CHOICES[which]
+                plugin.set_setting("auto_enable_no_conn_delay", val)
+                try:
+                    from client_utils import get_last_fragment
+                    f = get_last_fragment()
+                    if f and hasattr(f, "rebuildUI"):
+                        f.rebuildUI()
+                except Exception:
+                    pass
+                run_on_ui_thread(lambda: BulletinHelper.show_info(f"{L.g('auto_enable_no_conn_delay_title')}: {label}"))
         b.set_items(options, on_choice)
         b.set_negative_button(L.g("cancel"), lambda d, w: d.dismiss())
         b.show()
@@ -3294,15 +3385,14 @@ class Plugin(BasePlugin):
         if not bool(self.get_setting("proxy_limit_enabled", False)):
             return 0
         try:
-            max_count = int(self.get_setting("proxy_max_count", 30))
-            policy = int(self.get_setting("proxy_limit_policy", 0))
+            max_count = int(self.get_setting("proxy_max_count", 50))
             if not isinstance(recently_added_keys, (list, set, tuple)):
                 recently_added_keys = self._get_recently_added_keys()
             prot_json = json.dumps(list(recently_added_keys) if recently_added_keys else [])
             if dex.loaded:
-                removed = dex.call("pyEnforceProxyLimit", max_count, policy, prot_json)
+                removed = dex.call("pyEnforceProxyLimit", max_count, 0, prot_json)
                 if removed and int(removed) > 0:
-                    self.log(f"Enforced proxy limit: removed {removed} proxies (max: {max_count}, policy: {policy})")
+                    self.log(f"Enforced proxy limit: removed {removed} proxies (max: {max_count})")
                     return int(removed)
         except Exception as e:
             self.log(f"enforce_proxy_limit error: {e}")
@@ -3922,9 +4012,7 @@ class Plugin(BasePlugin):
             )
         )
         if limit_active:
-            max_cnt = int(self.get_setting("proxy_max_count", 30))
-            cur_pol = int(self.get_setting("proxy_limit_policy", 0))
-            pol_name = L.g("policy_replace_dead") if cur_pol == 0 else L.g("policy_replace_oldest")
+            max_cnt = int(self.get_setting("proxy_max_count", 50))
 
             alt_seekbar_view = None
             try:
@@ -3933,7 +4021,7 @@ class Plugin(BasePlugin):
                     def run(self, val):
                         v = int(val)
                         if v < 5: v = 5
-                        if v > 100: v = 100
+                        if v > 300: v = 300
                         plugin.set_setting("proxy_max_count", v)
 
                 from client_utils import get_last_fragment
@@ -3944,10 +4032,10 @@ class Plugin(BasePlugin):
                         act,
                         _LimitDrag(),
                         5,
-                        100,
+                        300,
                         L.g("proxy_max_count_title"),
                         "5",
-                        "100",
+                        "300",
                     )
                     alt_seekbar_view.setProgress(float(max_cnt))
             except Exception:
@@ -3963,14 +4051,6 @@ class Plugin(BasePlugin):
                         on_click=lambda *args: self._show_max_count_picker(*args),
                     )
                 )
-
-            items.append(
-                Text(
-                    text=L.g("proxy_limit_policy_title"),
-                    subtext=pol_name,
-                    on_click=lambda *args: self._show_limit_policy_picker(*args),
-                )
-            )
 
         items.append(Divider())
 
@@ -4006,6 +4086,24 @@ class Plugin(BasePlugin):
                     on_change=on_auto_conn_sub_change,
                 )
             )
+            no_conn_active = bool(self.get_setting("auto_enable_no_conn", True))
+            items.append(
+                Switch(
+                    key="auto_enable_no_conn",
+                    text=L.g("auto_enable_no_conn_title"),
+                    default=True,
+                    subtext=L.g("auto_enable_no_conn_sub"),
+                    on_change=make_master_toggle("auto_enable_no_conn"),
+                )
+            )
+            if no_conn_active:
+                items.append(
+                    Text(
+                        text=L.g("auto_enable_no_conn_delay_title"),
+                        subtext=self._get_no_conn_delay_label(),
+                        on_click=lambda *args: self._show_no_conn_delay_picker(*args),
+                    )
+                )
             media_switch_active = bool(self.get_setting("auto_switch_media", True))
             items.append(
                 Switch(
@@ -4725,6 +4823,10 @@ class Plugin(BasePlugin):
             first_name = channels[0].get("display", channels[0].get("chat", ""))
             self._set_progress(5, L.g("scan_progress_msg", 1, total_ch, first_name, 0, 0))
 
+            # Start dead proxy cleanup immediately in parallel with scanning
+            if self.get_setting("auto_clean_enabled", False) and self.get_setting("auto_clean_after_scan", False):
+                self._trigger_background_auto_clean()
+
             alive_proxies = self._perform_scan(channels, depth_days, progress_cb=update_progress)
 
             self._set_progress(100, L.g("scan_dialog_title"))
@@ -4751,9 +4853,6 @@ class Plugin(BasePlugin):
                     dex.call("pyAddAllProxies", json.dumps(links))
                     self._record_added_proxies(alive_proxies)
                     self._enforce_proxy_limit()
-
-            if self.get_setting("auto_clean_enabled", False) and self.get_setting("auto_clean_after_scan", False):
-                self._trigger_background_auto_clean()
 
             run_on_ui_thread(
                 lambda: self._show_results_bottom_sheet(
@@ -4792,8 +4891,132 @@ class Plugin(BasePlugin):
 
         threading.Thread(target=self._auto_connect_worker, daemon=True).start()
 
+    def _auto_enable_on_no_connection_worker(self):
+        if getattr(self, "_is_quick_searching", False) or getattr(self, "_is_auto_connecting", False):
+            return
+        try:
+            from org.telegram.messenger import SharedConfig
+            if SharedConfig.isProxyEnabled():
+                return
+
+            # 1. Try saved proxies in Telegram first (fast TCP ping)
+            if dex.loaded and dex.call("pyTryEnableAliveSavedProxy", 1500):
+                run_on_ui_thread(lambda: BulletinHelper.show_info(L.g("auto_enable_no_conn_triggered")))
+                self._on_proxy_switched()
+                return
+
+            # 2. Try cached results from previous scans
+            cached = getattr(self, "_last_results", None) or []
+            if cached:
+                alive_cached = _batch_check_candidates(cached[:40], timeout_ms=1500)
+                if alive_cached:
+                    alive_cached.sort(key=lambda x: x.get("ping", 999999))
+                    best = alive_cached[0]
+                    link = best.get("link") or best.get("url", "")
+                    if link and _py_apply_proxy(link):
+                        run_on_ui_thread(lambda: BulletinHelper.show_info(L.g("auto_enable_no_conn_triggered")))
+                        self._on_proxy_switched()
+                        return
+
+            # 3. Fallback: trigger quick search (which also handles offline/disabled proxy)
+            run_on_ui_thread(lambda: BulletinHelper.show_info(L.g("auto_enable_no_conn_triggered")))
+            self._quick_search_and_connect()
+        except Exception as e:
+            self.log(f"auto_enable_on_no_connection error: {e}")
+
+    def _quick_fetch_channel_candidates(self, ch_item, limit=25, max_batches=1, only_tls=False):
+        from org.telegram.messenger import MessagesController, UserConfig
+        from org.telegram.tgnet import TLRPC
+        from java.util import ArrayList
+
+        mc = MessagesController.getInstance(UserConfig.selectedAccount)
+        ch_name = ch_item.get("chat", "") if isinstance(ch_item, dict) else str(ch_item)
+        topic_id = ch_item.get("topic_id") if isinstance(ch_item, dict) else None
+        display_name = ch_item.get("display", ch_name) if isinstance(ch_item, dict) else ch_name
+        if not ch_name:
+            return []
+
+        peer = None
+        chat = None
+        try:
+            did = int(ch_name)
+            peer = mc.getInputPeer(jlong(did))
+        except Exception:
+            peer = None
+
+        clean_ch = ch_name.lstrip("@").strip()
+        if peer is None:
+            req = TLRPC.TL_contacts_resolveUsername()
+            req.username = clean_ch
+            resp, err = _send_sync_request(req, timeout=6.0)
+            if resp is not None and getattr(resp, "chats", None) and resp.chats.size() > 0:
+                chat = resp.chats.get(0)
+                mc.putChats(resp.chats, False)
+                peer = mc.getInputPeer(chat)
+
+        if peer is None:
+            return []
+
+        all_candidates = {}
+        offset_id = 0
+        for batch_idx in range(max_batches):
+            h_resp = None
+            h_err = None
+            if topic_id is not None and int(topic_id) > 0:
+                hist_req = TLRPC.TL_messages_getReplies()
+                hist_req.peer = peer
+                hist_req.msg_id = int(topic_id)
+                hist_req.offset_id = offset_id
+                hist_req.offset_date = 0
+                hist_req.add_offset = 0
+                hist_req.limit = limit
+                hist_req.max_id = 0
+                hist_req.min_id = 0
+                hist_req.hash = 0
+                h_resp, h_err = _send_sync_request(hist_req, timeout=6.0)
+
+            if h_err is not None or h_resp is None:
+                hist_req = TLRPC.TL_messages_getHistory()
+                hist_req.peer = peer
+                hist_req.offset_id = offset_id
+                hist_req.offset_date = 0
+                hist_req.add_offset = 0
+                hist_req.limit = limit
+                hist_req.max_id = 0
+                hist_req.min_id = 0
+                hist_req.hash = 0
+                h_resp, h_err = _send_sync_request(hist_req, timeout=6.0)
+
+            if h_err is not None or h_resp is None:
+                break
+
+            msgs = getattr(h_resp, "messages", None)
+            if not msgs or msgs.size() == 0:
+                break
+
+            for m in _iter_java_list(msgs):
+                proxies = _extract_proxy_candidates_from_message(m)
+                m_id = getattr(m, "id", None)
+                msg_link = _build_msg_link(ch_name, topic_id, m_id)
+                for p in proxies:
+                    if only_tls:
+                        p_type = str(p.get("type", "MTProto")).lower()
+                        port = p.get("port", 443)
+                        sec = str(p.get("secret", "")).lower()
+                        if "socks" in p_type or port != 443 or not (sec.startswith("ee") or len(sec) > 32):
+                            continue
+                    p["source"] = display_name
+                    if msg_link:
+                        p["msg_link"] = msg_link
+                    key = (p["type"], p["server"].lower(), p["port"], p["secret"])
+                    if key not in all_candidates:
+                        all_candidates[key] = p
+                offset_id = getattr(m, "id", offset_id)
+
+        return list(all_candidates.values())
+
     def _quick_search_and_connect(self):
-        if getattr(self, "_is_quick_searching", False) or getattr(self, "_scanning", False):
+        if getattr(self, "_is_quick_searching", False) or getattr(self, "_is_scanning", False):
             run_on_ui_thread(lambda: BulletinHelper.show_info(L.g("quick_search_in_progress")))
             return
         self._is_quick_searching = True
@@ -4801,12 +5024,67 @@ class Plugin(BasePlugin):
         def run():
             try:
                 run_on_ui_thread(lambda: BulletinHelper.show_info(L.g("quick_search_searching")))
+
+                # If proxy is currently OFF and Telegram is stuck connecting, try an alive saved proxy first
+                # so Telegram can connect and fetch fresh proxies from channels if needed
+                try:
+                    from org.telegram.messenger import SharedConfig
+                    if not SharedConfig.isProxyEnabled() and dex.loaded:
+                        conn_state = dex.call("pyGetConnectionState")
+                        if conn_state != 3:
+                            dex.call("pyTryEnableAliveSavedProxy", 1200)
+                except Exception:
+                    pass
+
                 channels = self._get_channel_tokens()
                 if not channels:
                     run_on_ui_thread(lambda: BulletinHelper.show_error(L.g("no_channels")))
                     return
 
-                alive = self._perform_scan(channels, depth_days=1, max_batches=6)
+                only_tls = bool(self.get_setting("only_tls_enabled", False))
+                whitelist = self._get_whitelist()
+                smart_enabled = bool(self.get_setting("smart_analysis_enabled", True))
+                alive = []
+
+                # Pass 1: fast streaming check (25 latest messages per channel, stop on first working batch)
+                for ch_item in channels:
+                    cands = self._quick_fetch_channel_candidates(ch_item, limit=25, max_batches=1, only_tls=only_tls)
+                    if not cands:
+                        continue
+                    batch_alive = _batch_check_candidates(cands, timeout_ms=1800)
+                    if batch_alive:
+                        if whitelist:
+                            _enrich_proxies_with_country(batch_alive)
+                            wl_matched = [p for p in batch_alive if p.get("country_code", "").upper() in whitelist]
+                            if wl_matched:
+                                alive = wl_matched
+                                break
+                        else:
+                            alive = batch_alive
+                            break
+
+                # Pass 2: deeper fallback (up to 3 batches x 50 msgs per channel, no date cutoff)
+                if not alive:
+                    for ch_item in channels:
+                        cands = self._quick_fetch_channel_candidates(ch_item, limit=50, max_batches=3, only_tls=only_tls)
+                        if not cands:
+                            continue
+                        batch_alive = _batch_check_candidates(cands, timeout_ms=2500)
+                        if batch_alive:
+                            if whitelist:
+                                _enrich_proxies_with_country(batch_alive)
+                                wl_matched = [p for p in batch_alive if p.get("country_code", "").upper() in whitelist]
+                                alive = wl_matched if wl_matched else batch_alive
+                            else:
+                                alive = batch_alive
+                            break
+
+                # Pass 3: fallback to cached results if channels were unreachable
+                if not alive and getattr(self, "_last_results", None):
+                    cached_alive = _batch_check_candidates(self._last_results[:40], timeout_ms=2000)
+                    if cached_alive:
+                        alive = cached_alive
+
                 if not alive:
                     run_on_ui_thread(lambda: BulletinHelper.show_error(L.g("quick_search_none_found")))
                     return
@@ -4814,7 +5092,6 @@ class Plugin(BasePlugin):
                 self._last_results = alive
                 self._save_results(alive)
 
-                smart_enabled = bool(self.get_setting("smart_analysis_enabled", True))
                 if smart_enabled:
                     alive.sort(key=lambda x: float(x.get("ping", 999999)) / max(0.1, self._calculate_smart_score(x)))
                 else:
@@ -4824,12 +5101,13 @@ class Plugin(BasePlugin):
                 self._record_proxy_stat(best, success=True)
                 self._enforce_proxy_limit(to_add_count=1)
 
-                applied = _py_apply_proxy(best.get("url", ""))
+                link = best.get("link") or best.get("url", "")
+                applied = _py_apply_proxy(link)
                 if applied:
                     server = best.get("server", "")
                     port = best.get("port", "")
                     ping = best.get("ping", 0)
-                    flag = best.get("country_flag", "")
+                    flag = best.get("flag") or best.get("country_flag", "")
                     label = f"{flag} {server}:{port}".strip()
                     run_on_ui_thread(
                         lambda: BulletinHelper.show_success(
@@ -5547,6 +5825,125 @@ class Plugin(BasePlugin):
             parts.append(f"По расписанию ({inv})")
         return ", ".join(parts) if parts else "Не настроено (выключено)"
 
+    def _show_triggers_with_interval_dialog(self, act, title, keys, labels, interval_key, interval_title):
+        try:
+            from android.widget import ScrollView, LinearLayout
+            from org.telegram.ui.ActionBar import Theme
+            from ui.alert import AlertDialogBuilder
+            from org.telegram.messenger import AndroidUtilities
+            from org.telegram.ui.Cells import CheckBoxCell, TextSettingsCell
+
+            scroll = ScrollView(act)
+            scroll.setVerticalScrollBarEnabled(True)
+
+            container = LinearLayout(act)
+            container.setOrientation(LinearLayout.VERTICAL)
+            container.setPadding(0, AndroidUtilities.dp(8), 0, AndroidUtilities.dp(8))
+
+            checked = [bool(self.get_setting(k, False)) for k in keys]
+            cur_interval = [int(self.get_setting(interval_key, 360))]
+            cells = []
+            interval_cell_holder = [None]
+
+            def update_interval_cell():
+                ic = interval_cell_holder[0]
+                if ic is None:
+                    return
+                inv_str = self._format_interval(cur_interval[0])
+                try:
+                    ic.setTextAndValue("Интервал расписания", inv_str, False)
+                    ic.setAlpha(1.0 if checked[3] else 0.45)
+                except Exception:
+                    pass
+
+            for i, label in enumerate(labels):
+                try:
+                    cell = CheckBoxCell(act, 1)
+                    cell.setText(str(label), "", bool(checked[i]), True)
+                    cell.setChecked(bool(checked[i]), False)
+                    cell.setBackground(Theme.getSelectorDrawable(False))
+                    try:
+                        if hasattr(cell, "getCheckBoxRound") and cell.getCheckBoxRound():
+                            cell.getCheckBoxRound().setColor(
+                                Theme.key_switch2TrackChecked,
+                                Theme.key_radioBackground,
+                                Theme.key_checkboxCheck,
+                            )
+                    except Exception:
+                        pass
+                except Exception:
+                    cell = CheckBoxCell(act, 1, 21, True, None)
+                    cell.setText(str(label), "", bool(checked[i]), True)
+                    cell.setChecked(bool(checked[i]), False)
+                    cell.setBackground(Theme.getSelectorDrawable(False))
+
+                def make_toggle(idx, target_cell):
+                    def on_click():
+                        new_val = not target_cell.isChecked()
+                        target_cell.setChecked(new_val, True)
+                        checked[idx] = new_val
+                        if idx == 3:
+                            update_interval_cell()
+                    return on_click
+
+                _set_click_listener(cell, make_toggle(i, cell))
+                container.addView(cell)
+                cells.append(cell)
+
+            # Native Telegram TextSettingsCell for picking schedule interval directly
+            ic = TextSettingsCell(act)
+            ic.setBackground(Theme.getSelectorDrawable(False))
+            interval_cell_holder[0] = ic
+            update_interval_cell()
+
+            plugin = self
+            def on_interval_click():
+                b_int = AlertDialogBuilder(act)
+                b_int.set_title(interval_title)
+                opts = [c[1] for c in plugin.INTERVAL_CHOICES]
+                def on_pick(d2, which2):
+                    d2.dismiss()
+                    if 0 <= which2 < len(plugin.INTERVAL_CHOICES):
+                        cur_interval[0] = plugin.INTERVAL_CHOICES[which2][0]
+                        if not checked[3]:
+                            checked[3] = True
+                            try:
+                                cells[3].setChecked(True, True)
+                            except Exception:
+                                pass
+                        update_interval_cell()
+                b_int.set_items(opts, on_pick)
+                b_int.set_negative_button(L.g("cancel"), lambda d2, w2: d2.dismiss())
+                b_int.show()
+
+            _set_click_listener(ic, on_interval_click)
+            container.addView(ic)
+
+            scroll.addView(container)
+
+            b = AlertDialogBuilder(act)
+            b.set_title(title)
+            b.set_view(scroll)
+
+            def on_save(d, w):
+                d.dismiss()
+                for i, k in enumerate(keys):
+                    plugin.set_setting(k, bool(checked[i]))
+                plugin.set_setting(interval_key, int(cur_interval[0]))
+                try:
+                    from client_utils import get_last_fragment
+                    f = get_last_fragment()
+                    if f and hasattr(f, "rebuildUI"):
+                        f.rebuildUI()
+                except Exception:
+                    pass
+
+            b.set_positive_button(L.g("save"), on_save)
+            b.set_negative_button(L.g("cancel"), lambda d, w: d.dismiss())
+            b.show()
+        except Exception as e:
+            self.log(f"triggers dialog error: {e}")
+
     def _show_auto_add_triggers_picker(self, *args):
         view = args[0] if args else None
         act, frag = _get_context_and_fragment(view)
@@ -5554,53 +5951,16 @@ class Plugin(BasePlugin):
             act = _get_act()
         if not act:
             return
-
         keys = ["auto_add_after_scan", "auto_add_on_startup", "auto_add_on_switch", "auto_add_periodic_enabled"]
-        inv_str = self._format_interval(self.get_setting("auto_add_interval_minutes", 360))
         labels = [
             L.g("trigger_after_scan"),
             L.g("trigger_on_startup"),
             L.g("trigger_on_switch"),
-            f"{L.g('trigger_periodic')} ({inv_str})",
+            L.g("trigger_periodic"),
         ]
-        subtitles = [
-            "",
-            "",
-            "",
-            f"Интервал: {inv_str}",
-        ]
-        checked = [bool(self.get_setting(k, False)) for k in keys]
-        was_periodic = checked[3]
-
-        plugin = self
-        def on_save(final_states):
-            for i, k in enumerate(keys):
-                plugin.set_setting(k, bool(final_states[i]))
-            try:
-                from client_utils import get_last_fragment
-                f = get_last_fragment()
-                if f and hasattr(f, "rebuildUI"):
-                    f.rebuildUI()
-            except Exception:
-                pass
-            if final_states[3] and not was_periodic:
-                run_on_ui_thread(lambda: plugin._show_interval_picker("auto_add_interval_minutes", L.g("auto_add_interval_title")))
-
-        neutral_btn = None
-        if was_periodic:
-            neutral_btn = (
-                f"Интервал ({inv_str})",
-                lambda: plugin._show_interval_picker("auto_add_interval_minutes", L.g("auto_add_interval_title"))
-            )
-
-        self._create_multi_choice_dialog(
-            act=act,
-            title=L.g("triggers_title"),
-            items=labels,
-            checked_states=checked,
-            on_save_cb=on_save,
-            neutral_btn=neutral_btn,
-            subtitles=subtitles,
+        self._show_triggers_with_interval_dialog(
+            act, L.g("triggers_title"), keys, labels,
+            "auto_add_interval_minutes", L.g("auto_add_interval_title"),
         )
 
     def _get_auto_clean_triggers_summary(self):
@@ -5623,53 +5983,16 @@ class Plugin(BasePlugin):
             act = _get_act()
         if not act:
             return
-
         keys = ["auto_clean_after_scan", "auto_clean_on_startup", "auto_clean_on_switch", "auto_clean_periodic_enabled"]
-        inv_str = self._format_interval(self.get_setting("auto_clean_interval_minutes", 360))
         labels = [
             L.g("trigger_after_scan"),
             L.g("trigger_on_startup"),
             L.g("trigger_on_switch"),
-            f"{L.g('trigger_periodic')} ({inv_str})",
+            L.g("trigger_periodic"),
         ]
-        subtitles = [
-            "",
-            "",
-            "",
-            f"Интервал: {inv_str}",
-        ]
-        checked = [bool(self.get_setting(k, False)) for k in keys]
-        was_periodic = checked[3]
-
-        plugin = self
-        def on_save(final_states):
-            for i, k in enumerate(keys):
-                plugin.set_setting(k, bool(final_states[i]))
-            try:
-                from client_utils import get_last_fragment
-                f = get_last_fragment()
-                if f and hasattr(f, "rebuildUI"):
-                    f.rebuildUI()
-            except Exception:
-                pass
-            if final_states[3] and not was_periodic:
-                run_on_ui_thread(lambda: plugin._show_interval_picker("auto_clean_interval_minutes", L.g("auto_clean_interval_title")))
-
-        neutral_btn = None
-        if was_periodic:
-            neutral_btn = (
-                f"Интервал ({inv_str})",
-                lambda: plugin._show_interval_picker("auto_clean_interval_minutes", L.g("auto_clean_interval_title"))
-            )
-
-        self._create_multi_choice_dialog(
-            act=act,
-            title=L.g("triggers_title"),
-            items=labels,
-            checked_states=checked,
-            on_save_cb=on_save,
-            neutral_btn=neutral_btn,
-            subtitles=subtitles,
+        self._show_triggers_with_interval_dialog(
+            act, L.g("triggers_title"), keys, labels,
+            "auto_clean_interval_minutes", L.g("auto_clean_interval_title"),
         )
 
     def _get_notification_mode_label(self):
