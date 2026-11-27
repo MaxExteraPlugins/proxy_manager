@@ -35,7 +35,7 @@ __id__ = "proxy_manager"
 __name__ = "Proxy Manager"
 __description__ = "Поиск и проверка рабочих MTProto, WebProxy и SOCKS5 прокси из каналов Telegram."
 __author__ = "@itNotMax - @MaxExteraPlugins"
-__version__ = "1.0.38"
+__version__ = "1.0.39"
 __icon__ = "MaxExteraPluginsStickers/35"
 __min_version__ = "12.10.6"
 
