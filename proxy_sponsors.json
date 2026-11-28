@@ -61,5 +61,18 @@
       "icon": "ProxyManagerSponsors/3",
       "url": "https://t.me/RaViraNet"
     },
+    {
+      "title": {
+        "ru": "Generation Liberty",
+        "en": "Generation Liberty"
+      },
+      "description": {
+        "ru": "Новости свободного интернета",
+        "en": "News of the free internet"
+      },
+      "icon": "ProxyManagerSponsors/5",
+      "url": "https://t.me/gen_liberty"
+    },
+
   ]
 }
